@@ -1,0 +1,7 @@
+{
+  "name": "AI Presentation Studio",
+  "description": "AI-powered presentation builder supporting PowerPoint (.pptx) export, multi-language generation (Kazakh, Russian, English), speaker defense scripts, and custom visual styles.",
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
