@@ -8,7 +8,7 @@
 
 ## Осалдық туралы хабарлау
 **Ашық issue ашпаңыз.** Оның орнына:
-- Email: security@example.com (өз email-іңізді қойыңыз)
+- Email: dev.d1darbek@gmail.com
 - Немесе GitHub Security Advisories арқылы
 
 Хабарламада:
