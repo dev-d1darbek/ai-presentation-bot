@@ -98,5 +98,7 @@ class TelegramSession(BaseModel):
     slideCount: int = 15
     designId: str = "auto"
     pendingTopic: Optional[str] = None
+    pendingDocumentText: Optional[str] = None
     themePage: int = 0
+    projectsPage: int = 0
     lastPresentation: Optional[PresentationData] = None

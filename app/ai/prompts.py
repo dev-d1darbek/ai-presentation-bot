@@ -1,36 +1,51 @@
 """
 System prompts and LLM prompt builder for presentation generation.
+Supports both topic-based generation and document-to-slide (PDF/DOCX/TXT) generation.
 """
 import json
 from typing import List, Dict, Any, Optional
 from app.core.types import ThemeConfig
+
 
 def build_system_prompt(
     topic: str,
     count: int,
     language: str,
     selected_theme: ThemeConfig,
-    prompt_context: Optional[List[Dict[str, Any]]] = None
+    prompt_context: Optional[List[Dict[str, Any]]] = None,
+    document_text: Optional[str] = None,
 ) -> str:
     """
     Builds token-efficient, photo-free, presentation architecture prompt.
+    If document_text is provided, instructs the LLM to synthesize slides directly from the source document.
     """
     context_str = json.dumps(prompt_context or [], ensure_ascii=False)
+
+    doc_section = ""
+    if document_text and document_text.strip():
+        # Truncate to max 16000 chars so it fits comfortably in context window
+        trimmed_doc = document_text.strip()[:16000]
+        doc_section = f"""
+SOURCE DOCUMENT CONTENT (Synthesize and structure the {count} slides strictly and accurately based on this uploaded document):
+\"\"\"
+{trimmed_doc}
+\"\"\"
+"""
 
     return f"""
 You are a World-Class Presentation Architect, Academic Researcher, and Visual Designer.
 Create a deeply informative, comprehensive, self-contained presentation in compact JSON format.
 
 Input Parameters:
-- Topic: {topic}
+- Topic / Title: {topic}
 - Target Slide Count: Exactly {count} slides
 - Language: {language}
 - Target Design Theme: {selected_theme.id}
 - Conversation context / modifications: {context_str}
-
+{doc_section}
 CRITICAL CONTENT & TOKEN EFFICIENCY REQUIREMENTS:
 1. NO IMAGES OR PHOTOS: Do NOT generate 'image_query' or 'image_url'.
-2. NO SPEAKER NOTES: Do NOT generate 'speaker_notes'. Put all key explanations, facts, dates, and arguments directly into 'content' and 'key_points' so the presenter can defend directly from the slides.
+2. NO SPEAKER NOTES FIELD: Put all key explanations, facts, dates, and arguments directly into 'content' and 'key_points' so the presenter can defend directly from the slides.
 3. NO DESIGN NAME ON COVER: On Slide 1 ("cover"), do NOT mention the design theme name or platform name in 'title' or 'subtitle'.
 4. SELF-CONTAINED ANALYTICAL CONTENT ON EVERY SLIDE:
    - 'content': Write a clear, substantive analytical paragraph of 35-55 words in {language} explaining the core concepts, causes, mechanisms, or historical facts.

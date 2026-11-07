@@ -5,6 +5,7 @@ from app.bot.keyboards.inline import (
     build_clean_themes_keyboard,
     build_default_slides_keyboard,
     build_post_generation_keyboard,
+    build_user_projects_keyboard,
     build_admin_keyboard,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "build_clean_themes_keyboard",
     "build_default_slides_keyboard",
     "build_post_generation_keyboard",
+    "build_user_projects_keyboard",
     "build_admin_keyboard",
 ]

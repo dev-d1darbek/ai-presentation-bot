@@ -1,13 +1,34 @@
 """
 Presentation generation service and workflow logic.
-Supports PPTX and PDF generation, logging, and admin analytics.
+Supports:
+- Smart Cross-User Cache (instant delivery when topic + slide_count match any previous project)
+- Document-to-Slide generation (.PDF / .DOCX / .PPTX / .TXT)
+- Speaker Defense Script generation ("🎤 Қорғау сөзі / Шпаргалка" as .DOCX + chat preview)
+- Saved User Projects ("📂 Менің жобаларым")
+- PPTX and PDF export
+- Admin analytics
 """
 import re
 import logging
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 from app.core.types import TelegramSession, PresentationData
 from app.core.themes import detect_best_theme_for_topic, THEMES_REGISTRY
-from app.core.db import init_db, log_user, log_generation, get_admin_stats, get_all_user_ids
+from app.core.db import (
+    init_db,
+    log_user,
+    log_generation,
+    get_admin_stats,
+    get_cached_presentation,
+    save_cached_presentation,
+    save_user_project,
+    get_user_projects,
+    get_user_project_by_id,
+)
+from app.core.doc_parser import (
+    extract_text_from_uploaded_file,
+    generate_speaker_defense_text,
+    build_defense_speech_docx,
+)
 from app.ai.client import AIClient
 from app.pptx_generator.engine import build_pptx_deck
 from app.pptx_generator.pdf_engine import build_pdf_deck
@@ -24,6 +45,7 @@ ai_client = AIClient(
     openai_api_key=config.OPENAI_API_KEY,
 )
 
+
 def parse_user_input(text: str) -> Tuple[str, Optional[int], Optional[str]]:
     """
     Parses text to extract clean topic, optional inline slide count, and optional theme mention.
@@ -33,13 +55,15 @@ def parse_user_input(text: str) -> Tuple[str, Optional[int], Optional[str]]:
     extracted_theme_id = None
 
     # Check inline slide count
-    inline_match = re.search(r'[, -]*(\d{1,2})\s*(беттік|бет|слайдтан|слайд)\b', clean_text, re.IGNORECASE)
+    inline_match = re.search(r"[, -]*(\d{1,2})\s*(беттік|бет|слайдтан|слайд)\b", clean_text, re.IGNORECASE)
     if inline_match:
         try:
             num = int(inline_match.group(1))
             if config.MIN_SLIDE_COUNT <= num <= config.MAX_SLIDE_COUNT:
                 extracted_count = num
-                stripped = re.sub(r'[, -]*\d{1,2}\s*(беттік|бет|слайдтан|слайд)\b', '', clean_text, flags=re.IGNORECASE).strip()
+                stripped = re.sub(
+                    r"[, -]*\d{1,2}\s*(беттік|бет|слайдтан|слайд)\b", "", clean_text, flags=re.IGNORECASE
+                ).strip()
                 if len(stripped) >= 2:
                     clean_text = stripped
         except Exception:
@@ -54,15 +78,22 @@ def parse_user_input(text: str) -> Tuple[str, Optional[int], Optional[str]]:
 
     return clean_text, extracted_count, extracted_theme_id
 
+
 async def generate_deck_for_session(
     session: TelegramSession,
     user_id: Optional[int] = None,
-    slide_count: Optional[int] = None
-) -> Tuple[bytes, str, PresentationData]:
+    slide_count: Optional[int] = None,
+) -> Tuple[bytes, str, PresentationData, bool]:
     """
-    Executes presentation generation for session and returns (pptx_bytes, filename, presentation).
+    Executes presentation generation for session.
+    1. Checks global cross-user cache first (matching normalized topic + slide_count + doc_hash).
+       If found, re-renders with user's selected theme in <0.3s without calling AI!
+    2. Otherwise calls AI (or fallback), saves to global cache and user's saved projects.
+    Returns (pptx_bytes, filename, presentation, from_cache).
     """
-    topic = session.pendingTopic or (session.lastPresentation.topic if session.lastPresentation else "Жасанды интеллект")
+    topic = session.pendingTopic or (
+        session.lastPresentation.topic if session.lastPresentation else "Жасанды интеллект"
+    )
     count = slide_count or session.slideCount or config.DEFAULT_SLIDE_COUNT
     count = max(config.MIN_SLIDE_COUNT, min(count, config.MAX_SLIDE_COUNT))
 
@@ -72,31 +103,54 @@ async def generate_deck_for_session(
         else detect_best_theme_for_topic(topic)
     )
 
-    presentation = await ai_client.generate_presentation(
-        topic=topic,
-        slide_count=count,
-        design_id=selected_theme.id,
-        language="қазақша"
-    )
+    doc_text = session.pendingDocumentText
+    from_cache = False
+
+    # 1. Check Smart Cross-User Cache
+    cached_pres = get_cached_presentation(topic, count, doc_text=doc_text)
+    if cached_pres and len(cached_pres.slides) == count:
+        logger.info(
+            f"⚡ Smart Cache HIT for topic='{topic}' ({count} slides)! Applying design='{selected_theme.id}'."
+        )
+        presentation = cached_pres
+        presentation.design_id = selected_theme.id
+        from_cache = True
+    else:
+        # 2. Generate via AI / Fallback
+        presentation = await ai_client.generate_presentation(
+            topic=topic,
+            slide_count=count,
+            design_id=selected_theme.id,
+            language="қазақша",
+            document_text=doc_text,
+        )
+        presentation.design_id = selected_theme.id
+        try:
+            save_cached_presentation(topic, count, presentation, doc_text=doc_text)
+        except Exception as e:
+            logger.warning(f"Failed to save to presentation cache: {e}")
 
     pptx_bytes = build_pptx_deck(presentation)
-    base_name = re.sub(r'[^a-zA-Z0-9\u0400-\u04FF]', '_', topic)[:40].strip('_') or "presentation"
+    base_name = re.sub(r"[^a-zA-Z0-9\u0400-\u04FF]", "_", topic)[:40].strip("_") or "presentation"
     clean_filename = f"{base_name}.pptx"
 
     session.lastPresentation = presentation
     session.pendingTopic = topic
+    session.pendingDocumentText = None  # Reset document buffer after generation
 
     if user_id:
         try:
-            log_generation(user_id, topic, count, selected_theme.id, "pptx")
+            save_user_project(user_id, presentation)
+            log_generation(user_id, topic, count, selected_theme.id, "pptx", from_cache=from_cache)
         except Exception as e:
-            logger.warning(f"Failed to log generation: {e}")
+            logger.warning(f"Failed to log/save user project: {e}")
 
-    return pptx_bytes, clean_filename, presentation
+    return pptx_bytes, clean_filename, presentation, from_cache
+
 
 def build_pdf_for_session(
     session: TelegramSession,
-    pptx_bytes: Optional[bytes] = None
+    pptx_bytes: Optional[bytes] = None,
 ) -> Optional[Tuple[bytes, str]]:
     """
     Generates PDF bytes for the last presentation in session.
@@ -105,16 +159,41 @@ def build_pdf_for_session(
         return None
 
     pdf_bytes = build_pdf_deck(session.lastPresentation, pptx_bytes=pptx_bytes)
-    base_name = re.sub(r'[^a-zA-Z0-9\u0400-\u04FF]', '_', session.lastPresentation.topic)[:40].strip('_') or "presentation"
+    base_name = (
+        re.sub(r"[^a-zA-Z0-9\u0400-\u04FF]", "_", session.lastPresentation.topic)[:40].strip("_")
+        or "presentation"
+    )
     filename = f"{base_name}.pdf"
     return pdf_bytes, filename
 
+
+def build_speech_for_session(
+    session: TelegramSession,
+) -> Optional[Tuple[str, bytes, str]]:
+    """
+    Generates Speaker Defense Script (Қорғау сөзі / Шпаргалка) for the last presentation.
+    Returns (preview_text, docx_bytes, docx_filename).
+    """
+    if not session.lastPresentation:
+        return None
+
+    full_text = generate_speaker_defense_text(session.lastPresentation)
+    docx_bytes = build_defense_speech_docx(session.lastPresentation)
+    base_name = (
+        re.sub(r"[^a-zA-Z0-9\u0400-\u04FF]", "_", session.lastPresentation.topic)[:35].strip("_")
+        or "presentation"
+    )
+    filename = f"Қорғау_сөзі_{base_name}.docx"
+    return full_text, docx_bytes, filename
+
+
 def reexport_deck_with_theme(
     session: TelegramSession,
-    theme_id: str
+    theme_id: str,
+    user_id: Optional[int] = None,
 ) -> Optional[Tuple[bytes, str, str]]:
     """
-    Instantly re-renders last presentation with new design (0 AI tokens, ~1 second).
+    Instantly re-renders last presentation with new design (0 AI tokens, ~0.3 second).
     Returns (pptx_bytes, filename, theme_name_kz) or None if no last presentation.
     """
     if not session.lastPresentation:
@@ -128,10 +207,45 @@ def reexport_deck_with_theme(
 
     session.lastPresentation.design_id = new_theme.id
     pptx_bytes = build_pptx_deck(session.lastPresentation)
-    base_name = re.sub(r'[^a-zA-Z0-9\u0400-\u04FF]', '_', session.lastPresentation.topic)[:40].strip('_') or "presentation"
+    base_name = (
+        re.sub(r"[^a-zA-Z0-9\u0400-\u04FF]", "_", session.lastPresentation.topic)[:40].strip("_")
+        or "presentation"
+    )
     clean_filename = f"{base_name}.pptx"
 
+    if user_id:
+        try:
+            save_user_project(user_id, session.lastPresentation)
+        except Exception:
+            pass
+
     return pptx_bytes, clean_filename, new_theme.nameKz
+
+
+def load_saved_project_for_session(
+    session: TelegramSession,
+    project_id: int,
+    user_id: Optional[int] = None,
+) -> Optional[Tuple[bytes, str, PresentationData, str]]:
+    """
+    Loads a previously saved project from DB into session and renders PPTX immediately.
+    Returns (pptx_bytes, filename, presentation, theme_name_kz).
+    """
+    pres = get_user_project_by_id(project_id, user_id=user_id)
+    if not pres:
+        return None
+
+    theme_obj = THEMES_REGISTRY.get(pres.design_id, THEMES_REGISTRY["swiss_minimalism"])
+    session.lastPresentation = pres
+    session.pendingTopic = pres.topic
+    session.slideCount = pres.slide_count
+    session.designId = pres.design_id
+
+    pptx_bytes = build_pptx_deck(pres)
+    base_name = re.sub(r"[^a-zA-Z0-9\u0400-\u04FF]", "_", pres.topic)[:40].strip("_") or "presentation"
+    filename = f"{base_name}.pptx"
+    return pptx_bytes, filename, pres, theme_obj.nameKz
+
 
 def format_admin_dashboard_text() -> str:
     """
@@ -156,7 +270,8 @@ def format_admin_dashboard_text() -> str:
     recent_str = ""
     for idx, r in enumerate(stats["recent_generations"][:5]):
         u_name = f"@{r['username']}" if r.get("username") else (r.get("first_name") or "Қолданушы")
-        recent_str += f"  • {u_name}: «{r['topic']}» ({r['slide_count']} бет)\n"
+        cache_icon = "⚡" if r.get("from_cache") else "🤖"
+        recent_str += f"  {cache_icon} {u_name}: «{r['topic']}» ({r['slide_count']} бет)\n"
     if not recent_str:
         recent_str = "  (Әзірге презентация жасалмаған)\n"
 
@@ -168,7 +283,8 @@ def format_admin_dashboard_text() -> str:
         f"• Бүгін белсенді: <b>{stats['users_today']}</b> адам\n\n"
         "📑 <b>Жасалған презентациялар:</b>\n"
         f"• Жалпы саны: <b>{stats['total_generations']}</b> файл\n"
-        f"• Бүгін жасалған: <b>{stats['generations_today']}</b> файл\n\n"
+        f"• Бүгін жасалған: <b>{stats['generations_today']}</b> файл\n"
+        f"• ⚡ Кэштен лезде берілгені: <b>{stats['cached_generations']}</b> рет (Базада: {stats['total_cached_items']} жоба)\n\n"
         "🎨 <b>Үздік дизайн стильдері:</b>\n"
         f"{themes_str}\n"
         "📄 <b>Сұранысқа ие бет сандары:</b>\n"

@@ -1,8 +1,8 @@
 """
 Multi-provider AI client supporting DeepSeek, Gemini, OpenAI, and Intelligent Fallback.
+Supports both topic-based and document-based presentation generation.
 """
 import os
-import json
 import time
 import logging
 from typing import Optional, Dict, Any, List
@@ -15,6 +15,7 @@ from app.ai.parser import robust_parse_json
 from app.ai.fallback import generate_intelligent_fallback
 
 logger = logging.getLogger(__name__)
+
 
 class AIClient:
     def __init__(
@@ -42,7 +43,8 @@ class AIClient:
             "messages": [
                 {
                     "role": "system",
-                    "content": system_prompt or "You are a professional presentation architect and visual designer. Always output strictly valid, compact JSON.",
+                    "content": system_prompt
+                    or "You are a professional presentation architect and visual designer. Always output strictly valid, compact JSON.",
                 },
                 {"role": "user", "content": user_prompt},
             ],
@@ -52,7 +54,7 @@ class AIClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=65.0) as client:
                 res = await client.post(url, headers=headers, json=payload)
                 if res.status_code == 200:
                     data = res.json()
@@ -75,11 +77,11 @@ class AIClient:
             "generationConfig": {
                 "responseMimeType": "application/json",
                 "temperature": 0.5,
-            }
+            },
         }
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=65.0) as client:
                 res = await client.post(url, json=payload)
                 if res.status_code == 200:
                     data = res.json()
@@ -119,7 +121,7 @@ class AIClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=65.0) as client:
                 res = await client.post(url, headers=headers, json=payload)
                 if res.status_code == 200:
                     data = res.json()
@@ -137,7 +139,8 @@ class AIClient:
         topic: str,
         count: int,
         theme_id: str,
-        total_score: int = 98
+        total_score: int = 98,
+        document_text: Optional[str] = None,
     ) -> PresentationData:
         """Pads and converts raw dictionary slides to PresentationData."""
         raw_slides = parsed.get("slides", [])
@@ -145,7 +148,6 @@ class AIClient:
 
         for idx, s in enumerate(raw_slides):
             try:
-                # Normalize slide_number
                 s["slide_number"] = s.get("slide_number") or (idx + 1)
                 slides.append(SlideContent(**s))
             except Exception as e:
@@ -153,14 +155,14 @@ class AIClient:
 
         # Pad with fallback if LLM generated fewer slides than requested
         if len(slides) < count:
-            fb = generate_intelligent_fallback(topic, count, theme_id)
+            fb = generate_intelligent_fallback(topic, count, theme_id, document_text=document_text)
             needed = count - len(slides)
             for i in range(needed):
                 extra_idx = len(slides) + i
                 extra_slide = (
                     fb.slides[extra_idx]
                     if extra_idx < len(fb.slides)
-                    else fb.slides[-1].model_copy(deep=True)
+                    else (fb.slides[-1].model_copy(deep=True) if hasattr(fb.slides[-1], "model_copy") else fb.slides[-1].copy(deep=True))
                 )
                 extra_slide.slide_number = len(slides) + 1
                 slides.append(extra_slide)
@@ -177,6 +179,7 @@ class AIClient:
             slides=slides,
             plan_summary=plan_summary,
             quality_score=QualityScore(total=total_score),
+            createdAt=str(time.time()),
         )
 
     async def generate_presentation(
@@ -185,6 +188,7 @@ class AIClient:
         slide_count: int = 15,
         design_id: Optional[str] = None,
         language: str = "қазақша",
+        document_text: Optional[str] = None,
     ) -> PresentationData:
         """
         Generates full presentation: tries DeepSeek -> Gemini -> OpenAI -> Fallback.
@@ -196,7 +200,7 @@ class AIClient:
             else detect_best_theme_for_topic(topic)
         )
 
-        prompt = build_system_prompt(topic, count, language, selected_theme)
+        prompt = build_system_prompt(topic, count, language, selected_theme, document_text=document_text)
 
         # 1. DeepSeek
         if self.deepseek_key:
@@ -204,7 +208,7 @@ class AIClient:
             parsed = await self.call_deepseek(prompt)
             if parsed and isinstance(parsed.get("slides"), list) and len(parsed["slides"]) > 0:
                 logger.info(f"Successfully generated presentation via DeepSeek ({len(parsed['slides'])} slides)")
-                return self._finalize_presentation(parsed, topic, count, selected_theme.id, 98)
+                return self._finalize_presentation(parsed, topic, count, selected_theme.id, 98, document_text=document_text)
 
         # 2. Gemini
         if self.gemini_key:
@@ -212,7 +216,7 @@ class AIClient:
             parsed = await self.call_gemini(prompt)
             if parsed and isinstance(parsed.get("slides"), list) and len(parsed["slides"]) > 0:
                 logger.info(f"Successfully generated presentation via Gemini ({len(parsed['slides'])} slides)")
-                return self._finalize_presentation(parsed, topic, count, selected_theme.id, 96)
+                return self._finalize_presentation(parsed, topic, count, selected_theme.id, 96, document_text=document_text)
 
         # 3. OpenAI
         if self.openai_key:
@@ -220,8 +224,8 @@ class AIClient:
             parsed = await self.call_openai(prompt)
             if parsed and isinstance(parsed.get("slides"), list) and len(parsed["slides"]) > 0:
                 logger.info(f"Successfully generated presentation via OpenAI ({len(parsed['slides'])} slides)")
-                return self._finalize_presentation(parsed, topic, count, selected_theme.id, 97)
+                return self._finalize_presentation(parsed, topic, count, selected_theme.id, 97, document_text=document_text)
 
         # 4. Fallback generator
         logger.info("Using Intelligent Kazakh fallback generator...")
-        return generate_intelligent_fallback(topic, count, selected_theme.id)
+        return generate_intelligent_fallback(topic, count, selected_theme.id, document_text=document_text)
