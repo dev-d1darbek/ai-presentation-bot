@@ -383,7 +383,8 @@ async def handle_update(tg: TelegramAPIClient, update: Dict[str, Any]):
             if config.ADMIN_IDS and user_id not in config.ADMIN_IDS:
                 await tg.answer_callback(cq_id, "Рұқсат жоқ", show_alert=True)
                 return
-            await tg.edit_message(chat_id, msg_id, format_admin_dashboard_text(), build_admin_keyboard())
+            dash_txt, pend_w = format_admin_dashboard_text()
+            await tg.edit_message(chat_id, msg_id, dash_txt, build_admin_keyboard(pend_w))
             await tg.answer_callback(cq_id, "Жаңартылды!")
             return
 
@@ -613,10 +614,10 @@ async def handle_update(tg: TelegramAPIClient, update: Dict[str, Any]):
             if config.ADMIN_IDS and user_id not in config.ADMIN_IDS:
                 await tg.send_message(chat_id, "⛔️ Бұл команда тек бот әкімшісіне арналған.")
                 return
-            dashboard = format_admin_dashboard_text()
+            dashboard, pend_w = format_admin_dashboard_text()
             if not config.ADMIN_IDS:
                 dashboard += f"\n\n💡 <i>Кеңес: Өз Telegram ID-іңізді (<code>{user_id}</code>) .env файлына ADMIN_IDS={user_id} деп жазып қойыңыз.</i>"
-            await tg.send_message(chat_id, dashboard, build_admin_keyboard())
+            await tg.send_message(chat_id, dashboard, build_admin_keyboard(pend_w))
             return
 
         if text in ("/slides", "📄 Бет саны", "📄 Бет санын таңдау"):

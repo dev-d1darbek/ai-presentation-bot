@@ -6,7 +6,17 @@ from app.bot.keyboards.inline import (
     build_default_slides_keyboard,
     build_post_generation_keyboard,
     build_user_projects_keyboard,
+    build_tariffs_keyboard,
+    build_payment_instruction_keyboard,
+    build_admin_payment_review_keyboard,
+    build_referral_keyboard,
+    build_admin_withdrawal_action_keyboard,
     build_admin_keyboard,
+    build_admin_kaspi_settings_keyboard,
+    build_admin_price_editor_keyboard,
+    build_admin_user_manage_keyboard,
+    build_support_contact_keyboard,
+    build_admin_reply_user_keyboard,
 )
 
 __all__ = [
@@ -17,5 +27,15 @@ __all__ = [
     "build_default_slides_keyboard",
     "build_post_generation_keyboard",
     "build_user_projects_keyboard",
+    "build_tariffs_keyboard",
+    "build_payment_instruction_keyboard",
+    "build_admin_payment_review_keyboard",
+    "build_referral_keyboard",
+    "build_admin_withdrawal_action_keyboard",
     "build_admin_keyboard",
+    "build_admin_kaspi_settings_keyboard",
+    "build_admin_price_editor_keyboard",
+    "build_admin_user_manage_keyboard",
+    "build_support_contact_keyboard",
+    "build_admin_reply_user_keyboard",
 ]

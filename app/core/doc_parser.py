@@ -158,7 +158,7 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
             out_txt = os.path.join(temp_dir, "doc.txt")
             with open(in_pdf, "wb") as f:
                 f.write(file_bytes)
-            subprocess.run([pdftotext_bin, "-enc", "UTF-8", in_pdf, out_txt], timeout=20)
+            subprocess.run([pdftotext_bin, "-enc", "UTF-8", in_pdf, out_txt], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
             if os.path.exists(out_txt):
                 with open(out_txt, "r", encoding="utf-8", errors="ignore") as f:
                     text = f.read().strip()

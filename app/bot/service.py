@@ -6,7 +6,7 @@ Supports:
 - Speaker Defense Script generation ("🎤 Қорғау сөзі / Шпаргалка" as .DOCX + chat preview)
 - Saved User Projects ("📂 Менің жобаларым")
 - PPTX and PDF export
-- Admin analytics
+- Advanced Admin Control Center (Revenue, Sold Packages, Partner Withdrawals, User Lookup)
 """
 import re
 import logging
@@ -47,14 +47,10 @@ ai_client = AIClient(
 
 
 def parse_user_input(text: str) -> Tuple[str, Optional[int], Optional[str]]:
-    """
-    Parses text to extract clean topic, optional inline slide count, and optional theme mention.
-    """
     clean_text = text.strip()
     extracted_count = None
     extracted_theme_id = None
 
-    # Check inline slide count
     inline_match = re.search(r"[, -]*(\d{1,2})\s*(беттік|бет|слайдтан|слайд)\b", clean_text, re.IGNORECASE)
     if inline_match:
         try:
@@ -69,7 +65,6 @@ def parse_user_input(text: str) -> Tuple[str, Optional[int], Optional[str]]:
         except Exception:
             pass
 
-    # Check theme name mention
     lower_text = clean_text.lower()
     for theme_id, theme in THEMES_REGISTRY.items():
         if theme.name.lower() in lower_text or theme.nameKz.lower() in lower_text:
@@ -84,13 +79,6 @@ async def generate_deck_for_session(
     user_id: Optional[int] = None,
     slide_count: Optional[int] = None,
 ) -> Tuple[bytes, str, PresentationData, bool]:
-    """
-    Executes presentation generation for session.
-    1. Checks global cross-user cache first (matching normalized topic + slide_count + doc_hash).
-       If found, re-renders with user's selected theme in <0.3s without calling AI!
-    2. Otherwise calls AI (or fallback), saves to global cache and user's saved projects.
-    Returns (pptx_bytes, filename, presentation, from_cache).
-    """
     topic = session.pendingTopic or (
         session.lastPresentation.topic if session.lastPresentation else "Жасанды интеллект"
     )
@@ -106,7 +94,6 @@ async def generate_deck_for_session(
     doc_text = session.pendingDocumentText
     from_cache = False
 
-    # 1. Check Smart Cross-User Cache
     cached_pres = get_cached_presentation(topic, count, doc_text=doc_text)
     if cached_pres and len(cached_pres.slides) == count:
         logger.info(
@@ -116,7 +103,6 @@ async def generate_deck_for_session(
         presentation.design_id = selected_theme.id
         from_cache = True
     else:
-        # 2. Generate via AI / Fallback
         presentation = await ai_client.generate_presentation(
             topic=topic,
             slide_count=count,
@@ -136,7 +122,7 @@ async def generate_deck_for_session(
 
     session.lastPresentation = presentation
     session.pendingTopic = topic
-    session.pendingDocumentText = None  # Reset document buffer after generation
+    session.pendingDocumentText = None
 
     if user_id:
         try:
@@ -152,9 +138,6 @@ def build_pdf_for_session(
     session: TelegramSession,
     pptx_bytes: Optional[bytes] = None,
 ) -> Optional[Tuple[bytes, str]]:
-    """
-    Generates PDF bytes for the last presentation in session.
-    """
     if not session.lastPresentation:
         return None
 
@@ -170,10 +153,6 @@ def build_pdf_for_session(
 def build_speech_for_session(
     session: TelegramSession,
 ) -> Optional[Tuple[str, bytes, str]]:
-    """
-    Generates Speaker Defense Script (Қорғау сөзі / Шпаргалка) for the last presentation.
-    Returns (preview_text, docx_bytes, docx_filename).
-    """
     if not session.lastPresentation:
         return None
 
@@ -192,10 +171,6 @@ def reexport_deck_with_theme(
     theme_id: str,
     user_id: Optional[int] = None,
 ) -> Optional[Tuple[bytes, str, str]]:
-    """
-    Instantly re-renders last presentation with new design (0 AI tokens, ~0.3 second).
-    Returns (pptx_bytes, filename, theme_name_kz) or None if no last presentation.
-    """
     if not session.lastPresentation:
         return None
 
@@ -227,10 +202,6 @@ def load_saved_project_for_session(
     project_id: int,
     user_id: Optional[int] = None,
 ) -> Optional[Tuple[bytes, str, PresentationData, str]]:
-    """
-    Loads a previously saved project from DB into session and renders PPTX immediately.
-    Returns (pptx_bytes, filename, presentation, theme_name_kz).
-    """
     pres = get_user_project_by_id(project_id, user_id=user_id)
     if not pres:
         return None
@@ -247,11 +218,44 @@ def load_saved_project_for_session(
     return pptx_bytes, filename, pres, theme_obj.nameKz
 
 
-def format_admin_dashboard_text() -> str:
+def format_user_admin_card(profile: Dict[str, Any]) -> str:
+    """Formats a detailed user profile card for the Admin Panel."""
+    uid = profile.get("user_id")
+    uname = f"@{profile['username']}" if profile.get("username") else "Жоқ"
+    fname = profile.get("first_name") or "Белгісіз"
+    credits = profile.get("credits", 0)
+    invited = profile.get("invited_count", 0)
+    sales = profile.get("referral_sales_kzt", 0)
+    p_bal = profile.get("partner_balance_kzt", 0)
+    p_tot = profile.get("partner_total_earned_kzt", 0)
+
+    return (
+        f"👤 <b>ҚОЛДАНУШЫ ПРОФИЛІ</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"📛 Есімі: <b>{fname}</b> ({uname})\n"
+        f"🎫 Презентация балансы: <b>{credits} дана</b>\n\n"
+        f"👥 <b>Реферал және Серіктестік:</b>\n"
+        f"• Шақырған достары: <b>{invited} адам</b>\n"
+        f"• Достарының саудасы: <b>{sales} ₸</b>\n"
+        f"• Шығаруға қолжетімді табыс: <b>{p_bal} ₸</b> (Жалпы тапқаны: {p_tot} ₸)\n\n"
+        f"👇 Төмендегі батырмалар арқылы балансын өзгертуге немесе тікелей хат жазуға болады:"
+    )
+
+
+def format_admin_dashboard_text() -> Tuple[str, int]:
     """
-    Formats clean text representation of statistics for /admin dashboard.
+    Formats comprehensive admin statistics and returns (text, pending_withdrawals_count).
     """
     stats = get_admin_stats()
+
+    pkg_lines = ""
+    for p in stats.get("packages_breakdown", []):
+        t_obj = config.TARIFF_PLANS.get(p["tariff_id"], {})
+        t_title = t_obj.get("title", p["tariff_id"])
+        pkg_lines += f"  • {t_title}: <b>{p['cnt']} дана</b> ({p['sum_kzt']} ₸)\n"
+    if not pkg_lines:
+        pkg_lines = "  (Әзірге сатылым жоқ)\n"
 
     themes_str = ""
     for idx, t in enumerate(stats["top_themes"]):
@@ -261,12 +265,6 @@ def format_admin_dashboard_text() -> str:
     if not themes_str:
         themes_str = "  (Әзірге деректер жоқ)\n"
 
-    counts_str = ""
-    for idx, sc in enumerate(stats["top_slide_counts"]):
-        counts_str += f"  {idx + 1}. {sc['slide_count']} бет: {sc['count']} рет\n"
-    if not counts_str:
-        counts_str = "  (Әзірге деректер жоқ)\n"
-
     recent_str = ""
     for idx, r in enumerate(stats["recent_generations"][:5]):
         u_name = f"@{r['username']}" if r.get("username") else (r.get("first_name") or "Қолданушы")
@@ -275,21 +273,30 @@ def format_admin_dashboard_text() -> str:
     if not recent_str:
         recent_str = "  (Әзірге презентация жасалмаған)\n"
 
+    pend_w_cnt = stats.get("pending_withdrawals_count", 0)
+    pend_w_kzt = stats.get("pending_withdrawals_kzt", 0)
+    paid_w_cnt = stats.get("paid_withdrawals_count", 0)
+    paid_w_kzt = stats.get("paid_withdrawals_kzt", 0)
+
     text = (
-        "📊 <b>AI PRESENTATION BOT — БАСҚАРУ ПАНЕЛІ</b>\n"
+        "📊 <b>AI PRESENTATION BOT — АДМИН ПАНЕЛЬ</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "💰 <b>Қаржы және Сатылым:</b>\n"
+        f"• Бүгінгі табыс: <b>{stats['revenue_today_kzt']} ₸</b> ({stats['payments_today_count']} төлем)\n"
+        f"• Жалпы табыс: <b>{stats['revenue_total_kzt']} ₸</b> ({stats['payments_total_count']} төлем)\n\n"
+        "💸 <b>Серіктестік төлемдер (Выплаты):</b>\n"
+        f"• Күтілудегі сұраныстар: <b>{pend_w_cnt} дана ({pend_w_kzt} ₸)</b>\n"
+        f"• Төленген шығарулар: <b>{paid_w_cnt} дана ({paid_w_kzt} ₸)</b>\n"
+        f"• Жалпы есептелген бонус: <b>{stats['partner_paid_kzt']} ₸</b>\n\n"
+        "📦 <b>Сатылған пакеттер:</b>\n"
+        f"{pkg_lines}\n"
         "👥 <b>Пайдаланушылар:</b>\n"
-        f"• Жалпы тіркелген: <b>{stats['total_users']}</b> адам\n"
-        f"• Бүгін белсенді: <b>{stats['users_today']}</b> адам\n\n"
+        f"• Жалпы тіркелген: <b>{stats['total_users']}</b> адам (Бүгін: {stats['users_today']})\n\n"
         "📑 <b>Жасалған презентациялар:</b>\n"
-        f"• Жалпы саны: <b>{stats['total_generations']}</b> файл\n"
-        f"• Бүгін жасалған: <b>{stats['generations_today']}</b> файл\n"
+        f"• Жалпы саны: <b>{stats['total_generations']}</b> файл (Бүгін: {stats['generations_today']})\n"
         f"• ⚡ Кэштен лезде берілгені: <b>{stats['cached_generations']}</b> рет (Базада: {stats['total_cached_items']} жоба)\n\n"
-        "🎨 <b>Үздік дизайн стильдері:</b>\n"
-        f"{themes_str}\n"
-        "📄 <b>Сұранысқа ие бет сандары:</b>\n"
-        f"{counts_str}\n"
         "⏱ <b>Соңғы сұраныстар:</b>\n"
-        f"{recent_str}"
+        f"{recent_str}\n"
+        "🎁 <b>Командамен баланс беру:</b> <code>/give ID САНЫ</code>"
     )
-    return text
+    return text, pend_w_cnt
