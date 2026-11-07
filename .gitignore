@@ -1,0 +1,58 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.installed.cfg
+*.egg
+pip-wheel-metadata/
+
+# ---- Virtual env ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- Env / secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---- IDE ----
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- Project data ----
+data/
+logs/
+*.db
+*.sqlite
+*.sqlite3
+files/
+generated/
+*.pptx
+*.pdf
+
+# ---- Testing ----
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Docker ----
+*.log
