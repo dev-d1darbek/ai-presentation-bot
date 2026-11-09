@@ -1,13 +1,13 @@
 """
-Automated Test Suite for AI Presentation Bot (Full Commercial Edition + test.py Integration).
+Automated Test Suite for AI Presentation Bot Pro v2.
 Tests:
-1. 30 Themes Registry & Keyword Detection
-2. Robust JSON Parser & Salvage
-3. Minimalist PPTX & Zero-Dependency Pillow PDF Engines
-4. Document-to-Slide (.DOCX) & Speaker Defense Speech (.DOCX)
-5. Smart Cross-User Cache & Saved User Projects
-6. Dynamic Tariff Price Editor, Kaspi Pay URL Editor & First-Receipt Seller Memorization (test.py logic)
-7. Referrals, 2,000₸ Partner Withdrawal Flow & Admin Panel
+1. 35 Themes Registry & Removal of TTS / Teacher Package
+2. 6 Exact Tariffs & 3-Bucket Credit System (200₸ / 300₸ / 500₸ / 3,490₸ / 4,900₸ / 9,900₸) + DDG Photo Warning
+3. Free Bonus Credit Rule (usable for 'Бір реттік' and 'Бір реттік + ФОТО', blocked for OpenAI 'gpt-image-2')
+4. One-Time Promo Codes ('ALASH2025', 'KAZNU50') & Bonus Campaigns ('BONUS2025')
+5. Admin Package CRUD (Create new package, Edit package price/splits, Delete package)
+6. 8 Specialized Templates (including Медициналық, Заң жобасы, Маркетинг, Экология) + ҚР ЖОО ГОСТ 7.32-2017 Compliance
+7. AI Cost Optimization & Cost Tracker + 7d/30d PNG Charts + Paginated Filtered Users + 360° User Card + Project Deletion + CSV/Excel DB Export
 """
 import asyncio
 import os
@@ -23,220 +23,245 @@ from app.core.db import (
     init_db,
     log_user,
     get_user_profile,
-    find_user_by_query,
     get_user_credits,
+    get_user_credit_breakdown,
     consume_user_credit,
     add_user_credits,
-    get_seller_setting,
     set_seller_setting,
-    reset_seller_setting,
-    get_kaspi_pay_url,
-    set_kaspi_pay_url,
     get_dynamic_tariffs,
     update_tariff_setting,
+    create_custom_tariff_package,
+    delete_tariff_package,
+    toggle_tariff_package,
+    enable_all_tariff_packages,
+    get_enabled_generation_modes,
+    toggle_generation_mode,
+    set_only_nophoto_mode,
+    enable_all_generation_modes,
     create_payment_record,
     approve_payment,
-    create_withdrawal_request,
-    approve_withdrawal_request,
-    get_pending_withdrawals,
-    get_user_projects,
+    apply_promo_code_to_user,
+    create_or_update_promo_code,
+    delete_promo_code,
+    get_users_paginated,
+    get_segmented_user_ids,
+    delete_user_project_by_id,
+    log_support_ticket,
+    get_ai_cost_stats,
+    export_database_zip_bytes,
 )
-from app.core.verifier import verify_kaspi_receipt, _resolve_nuxt, extract_seller_info
+from app.core.verifier import verify_kaspi_receipt
 from app.core.doc_parser import (
     extract_text_from_uploaded_file,
     generate_speaker_defense_text,
     build_defense_speech_docx,
 )
+from app.core.image_search import populate_presentation_images, _cache as ddg_cache, search_images
 from app.ai.parser import robust_parse_json
 from app.ai.fallback import generate_intelligent_fallback
 from app.pptx_generator.engine import build_pptx_deck
 from app.pptx_generator.pdf_engine import build_pdf_deck
 from app.bot.service import (
     generate_deck_for_session,
-    load_saved_project_for_session,
+    render_admin_analytics_chart_png,
     format_user_admin_card,
     format_admin_dashboard_text,
 )
-from app.bot.session import get_telegram_session
+from app.bot.session import get_telegram_session, save_session, _sessions
+from app.bot.keyboards.inline import build_post_generation_keyboard, build_topic_ready_text, build_topic_ready_keyboard
 
 
-def test_themes_registry():
-    print("1. Testing Themes Registry...")
-    assert len(THEMES_REGISTRY) == 30
-    assert detect_best_theme_for_topic("Жасанды интеллект және IT").id == "futuristic_tech"
-    assert detect_best_theme_for_topic("Қазақ хандығының тарихы").id == "cinematic_history"
-    print("   ✓ Themes registry passed!")
+def test_config_tariffs_and_cleanup():
+    print("1. Testing 6 New Tariffs, 3-Bucket Splits, 8 Templates (ГОСТ 7.32-2017) & TTS/Teacher Removal...")
+    tts_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app", "core", "tts.py"))
+    assert not os.path.exists(tts_path), "app/core/tts.py must be removed!"
+    assert "teacher" not in config.TARIFF_PLANS, "Teacher package must be removed!"
+
+    t = config.TARIFF_PLANS
+    assert t["single"]["price_kzt"] == 200 and t["single"]["no_photo_credits"] == 1
+    assert t["single_photo"]["price_kzt"] == 300 and t["single_photo"]["ddg_photo_credits"] == 1
+    assert t["single_openai"]["price_kzt"] == 500 and t["single_openai"]["openai_photo_credits"] == 1
+    assert t["hit"]["price_kzt"] == 3490 and (t["hit"]["no_photo_credits"], t["hit"]["ddg_photo_credits"], t["hit"]["openai_photo_credits"]) == (10, 5, 5)
+    assert t["pro"]["price_kzt"] == 4900 and (t["pro"]["no_photo_credits"], t["pro"]["ddg_photo_credits"], t["pro"]["openai_photo_credits"]) == (10, 10, 10)
+    assert t["vip"]["price_kzt"] == 9900 and (t["vip"]["no_photo_credits"], t["vip"]["ddg_photo_credits"], t["vip"]["openai_photo_credits"]) == (40, 20, 20)
+
+    # Check 8 specialized templates + standard = 9 entries
+    for tmpl_key in ("diploma", "business", "scientific", "lesson", "medical", "law", "marketing", "ecology"):
+        assert tmpl_key in config.TEMPLATE_LIBRARY, f"Missing template {tmpl_key}!"
+    print("   ✓ 6 Tariffs, 3-Bucket Splits, 8 Templates & TTS/Teacher removal passed!")
 
 
-def test_json_parser():
-    print("2. Testing Robust JSON Parser...")
-    normal = '{"slides": [{"slide_number": 1, "title": "Test"}]}'
-    assert robust_parse_json(normal) is not None
+async def test_templates_gost_and_photo_warning():
+    print("2. Testing ГОСТ 7.32-2017 Defense Speech, New Templates & DDG Photo Disclaimer...")
+    config.DEBUG_MODE = True
+    for tmpl_id in ("medical", "law", "marketing", "ecology", "diploma"):
+        pres = generate_intelligent_fallback("Клиникалық диагностика", 6, template_id=tmpl_id)
+        assert len(pres.slides) == 6
 
-    truncated = '{"title_presentation": "AI", "slides": [{"slide_number": 1, "title": "Intro"}, {"slide_number": 2, "title": "Unfinished"'
-    salvaged = robust_parse_json(truncated)
-    assert salvaged is not None
-    assert len(salvaged["slides"]) == 1
-    print("   ✓ JSON parser passed!")
+    pres_gost = generate_intelligent_fallback("Жасанды интеллект", 7, template_id="diploma")
+    speech = generate_speaker_defense_text(pres_gost)
+    assert "ГОСТ 7.32-2017" not in speech and "ҚОРҒАУ СӨЗІ" in speech
 
-
-def test_pptx_and_pdf_engines():
-    print("3. Testing Minimalist PPTX & Zero-Dependency PDF Engines...")
-    pres = generate_intelligent_fallback("Жасанды интеллект дамуы", 6)
-    deck_bytes = build_pptx_deck(pres)
-    assert len(deck_bytes) > 20000
-
-    pdf_bytes = build_pdf_deck(pres, pptx_bytes=None)
-    assert len(pdf_bytes) > 20000
-    print(f"   ✓ PPTX ({len(deck_bytes)} bytes) & Pillow PDF ({len(pdf_bytes)} bytes) passed!")
-
-
-def test_document_to_slide_and_defense_speech():
-    print("4. Testing Document-to-Slide (.DOCX) & Speaker Defense Speech (.DOCX)...")
-    pres = generate_intelligent_fallback("Қазақстан тарихы", 8)
-    speech_text = generate_speaker_defense_text(pres)
-    assert "Құрметті комиссия мүшелері" in speech_text
-    assert "8-СЛАЙД" in speech_text
-
-    docx_bytes = build_defense_speech_docx(pres)
-    assert len(docx_bytes) > 1000
-
-    doc_title, extracted = extract_text_from_uploaded_file("Қазақстан_тарихы_мақала.docx", docx_bytes)
-    assert "Құрметті комиссия мүшелері" in extracted
-    doc_pres = generate_intelligent_fallback(doc_title, 6, document_text=extracted)
-    assert len(doc_pres.slides) == 6
-    print("   ✓ Document extraction (.DOCX) & Speaker Defense Speech (.DOCX) passed!")
+    # Verify DDG photo warning appears when session.withPhotos=True and imageSource='ddg'
+    s = get_telegram_session(999111)
+    s.pendingTopic = "Қазақстан экономикасы"
+    s.withPhotos = True
+    s.imageSource = "ddg"
+    ready_txt = build_topic_ready_text(s)
+    assert "интернеттен мысал ретінде" in ready_txt and "ЖИ қателесуі мүмкін" in ready_txt
+    config.DEBUG_MODE = False
+    print("   ✓ ГОСТ 7.32-2017 Defense Speech, 8 Templates & DDG Photo Disclaimer passed!")
 
 
-async def test_smart_cache_and_saved_projects():
-    print("5. Testing Smart Cross-User Cache & Saved User Projects...")
+def test_three_bucket_credits_and_one_time_promos():
+    print("3. Testing 3-Bucket Credit System, Free Bonus Rules & One-Time Promo Codes...")
     if os.path.exists(DB_PATH):
         os.remove(DB_PATH)
     init_db()
+    _sessions.clear()
 
-    user1_id = 10001
-    user2_id = 20002
-    log_user(user1_id, "user1", "Бірінші")
-    log_user(user2_id, "user2", "Екінші")
+    # 1. Free bonus user gets 1 bonus credit, usable for 'Бір реттік' (no photo) OR 'Бір реттік + ФОТО' (ddg), NEVER 'gpt-image-2'!
+    u1 = 1001
+    log_user(u1, "student1", "Айбек")
+    b1 = get_user_credit_breakdown(u1)
+    assert b1["bonus"] == 1 and b1["openai_photo"] == 0
 
-    s1 = get_telegram_session(user1_id)
-    s1.pendingTopic = "Жасыл экономика негіздері"
-    s1.slideCount = 8
-    s1.designId = "swiss_minimalism"
+    # Must block OpenAI gpt-image-2 on free bonus credit!
+    assert consume_user_credit(u1, with_photos=True, image_source="gpt-image-2") is False, "Free bonus must NOT allow OpenAI gpt-image-2!"
+    # Must allow 'Бір реттік + ФОТО' (ddg) on free bonus credit!
+    assert consume_user_credit(u1, with_photos=True, image_source="ddg") is True, "Free bonus MUST allow 'Бір реттік + ФОТО' (ddg)!"
+    assert get_user_credits(u1) == 0
 
-    pptx1, fname1, pres1, from_cache1 = await generate_deck_for_session(s1, user_id=user1_id, slide_count=8)
-    assert len(pptx1) > 20000
-    assert pres1.design_id == "swiss_minimalism"
+    # 2. One-Time Promo Code rule ('промокодтар тек Бір реттік істесін')
+    ok1, _, _ = apply_promo_code_to_user(u1, "ALASH2025")
+    assert ok1 is True, "First use of ALASH2025 must succeed!"
+    ok2, msg2, _ = apply_promo_code_to_user(u1, "ALASH2025")
+    assert ok2 is False and "1 рет" in msg2, "Second use of ALASH2025 by same user MUST be rejected!"
 
-    s2 = get_telegram_session(user2_id)
-    s2.pendingTopic = "Жасыл экономика негіздері!"
-    s2.slideCount = 8
-    s2.designId = "apple_keynote"
+    # Gift/Bonus Campaign promo code ('BONUS2025' -> +1 bonus credit once)
+    ok_b1, _, _ = apply_promo_code_to_user(u1, "BONUS2025")
+    assert ok_b1 is True and get_user_credit_breakdown(u1)["bonus"] == 1
+    ok_b2, _, _ = apply_promo_code_to_user(u1, "BONUS2025")
+    assert ok_b2 is False, "Second use of BONUS2025 must be rejected!"
 
-    pptx2, fname2, pres2, from_cache2 = await generate_deck_for_session(s2, user_id=user2_id, slide_count=8)
-    assert from_cache2 is True, "Expected Smart Cross-User Cache HIT for user2!"
-    assert pres2.design_id == "apple_keynote", "Expected user2's chosen design to be applied!"
+    # Consume that bonus credit on 'Бір реттік' (no-photo)
+    assert consume_user_credit(u1, with_photos=False) is True
+    assert get_user_credits(u1) == 0
 
-    u2_projects, total2 = get_user_projects(user2_id)
-    assert total2 >= 1
+    # Verify 50% ALASH2025 discount applies ONLY to 'Бір реттік' packages (single, single_photo, single_openai) and NOT to Hit/Pro/VIP!
+    user_tariffs = get_dynamic_tariffs(user_id=u1)
+    assert user_tariffs["single"]["price_kzt"] == 100 and user_tariffs["single_photo"]["price_kzt"] == 150 and user_tariffs["single_openai"]["price_kzt"] == 250
+    assert user_tariffs["hit"]["price_kzt"] == 3490 and user_tariffs["pro"]["price_kzt"] == 4900 and user_tariffs["vip"]["price_kzt"] == 9900
 
-    loaded = load_saved_project_for_session(s2, u2_projects[0]["id"], user_id=user2_id)
-    assert loaded is not None
-    print("   ✓ Smart Cross-User Cache & Saved User Projects passed!")
-
-
-def test_dynamic_prices_seller_memorization_and_withdrawals():
-    print("6. Testing Seller Auto-Memorization (test.py), Dynamic Prices, Kaspi Verifier & Withdrawals...")
-    # 1. Test Nuxt resolver & Seller Info extractor from test.py
-    sample_nuxt = [{"amount": 1, "extTranId": 2}, 2000, "QR123456789"]
-    resolved = _resolve_nuxt(sample_nuxt, sample_nuxt[0], inside=False)
-    assert resolved["amount"] == 2000
-    assert resolved["extTranId"] == "QR123456789"
-
-    sample_seller_pdf = (
+    # 3. Purchase 'Студент Pro' at full price 4,900 ₸ (since 50% promo is only for Бір реттік packages)
+    set_seller_setting({"company": "ИП ДИДАРБЕК", "company_bin": "010203405060", "sample_receipt": "QR1"})
+    pro_pdf = (
         b"%PDF-1.4\n1 0 obj\n<<>>\nstream\n"
-        + ("(ИП ДИДАРБЕК ИИН/БИН: 010203405060 Квитанция №QR555666777)").encode("utf-8")
+        + ("(Kaspi Bank Төлем сәтті өтті ИИН/БИН: 010203405060 Квитанция №QR555999111 Сомасы 4900 ₸)").encode("utf-8")
         + b"\nendstream\nendobj\n"
     )
-    s_info = extract_seller_info(sample_seller_pdf)
-    assert s_info["company_bin"] == "010203405060"
-    assert "ДИДАРБЕК" in (s_info["company"] or "")
+    config.DEBUG_MODE = True
+    v_res = verify_kaspi_receipt(pro_pdf, "receipt.pdf", expected_tariff_id="pro", user_id=u1)
+    config.DEBUG_MODE = False
+    assert v_res.is_valid is True
+    assert (v_res.no_photo_to_add, v_res.ddg_photo_to_add, v_res.openai_photo_to_add) == (10, 10, 10)
 
-    # Save memorized seller (as when Admin sends 1st PDF receipt)
-    set_seller_setting({
-        "company": s_info["company"],
-        "company_bin": s_info["company_bin"],
-        "sample_receipt": "QR555666777",
-    })
-    assert get_seller_setting()["company_bin"] == "010203405060"
-
-    # 2. Test Dynamic Kaspi Pay URL & Dynamic Tariff Price Editing in Bot
-    set_kaspi_pay_url("https://pay.kaspi.kz/pay/NEW_ADMIN_LINK")
-    assert get_kaspi_pay_url() == "https://pay.kaspi.kz/pay/NEW_ADMIN_LINK"
-
-    # Admin changes 'single' tariff price from 200 ₸ to 350 ₸
-    update_tariff_setting("single", price_kzt=350, credits=2)
-    dyn_tariffs = get_dynamic_tariffs()
-    assert dyn_tariffs["single"]["price_kzt"] == 350
-    assert dyn_tariffs["single"]["credits"] == 2
-
-    # 3. Verify receipt matching memorized seller BIN (010203405060) and dynamic price (350 ₸)
-    valid_custom_pdf = (
-        b"%PDF-1.4\n1 0 obj\n<<>>\nstream\n"
-        + ("(Kaspi Bank Төлем сәтті өтті ИИН/БИН: 010203405060 Квитанция №QR777888999 Сомасы 350 ₸)").encode("utf-8")
-        + b"\nendstream\nendobj\n"
+    pay_id = create_payment_record(
+        u1, "pro", v_res.amount_kzt, v_res.credits_to_add,
+        receipt_hash=v_res.receipt_hash, receipt_number=v_res.receipt_number,
+        no_photo_added=v_res.no_photo_to_add, ddg_photo_added=v_res.ddg_photo_to_add, openai_photo_added=v_res.openai_photo_to_add,
     )
-    v_custom = verify_kaspi_receipt(valid_custom_pdf, "receipt.pdf", user_id=10001)
-    assert v_custom.is_valid is True
-    assert v_custom.amount_kzt == 350
-    assert v_custom.credits_to_add == 2
+    approve_payment(pay_id)
+    b_after = get_user_credit_breakdown(u1)
+    assert (b_after["no_photo"], b_after["ddg_photo"], b_after["openai_photo"]) == (10, 10, 10)
 
-    # Receipt from a DIFFERENT seller BIN (999999999999) MUST be rejected!
-    wrong_bin_pdf = (
-        b"%PDF-1.4\n1 0 obj\n<<>>\nstream\n"
-        + ("(Kaspi Bank Төлем сәтті өтті ИИН/БИН: 999999999999 Квитанция №QR111222333 Сомасы 350 ₸)").encode("utf-8")
-        + b"\nendstream\nendobj\n"
-    )
-    v_wrong_bin = verify_kaspi_receipt(wrong_bin_pdf, "receipt.pdf", user_id=10001)
-    assert v_wrong_bin.is_valid is False
+    # Now OpenAI gpt-image-2 is allowed and deducts from openai_photo_credits!
+    assert consume_user_credit(u1, with_photos=True, image_source="gpt-image-2") is True
+    assert get_user_credit_breakdown(u1)["openai_photo"] == 9
+    print("   ✓ 3-Bucket Credits, Free Bonus Rules & One-Time Promo Codes passed!")
 
-    # Reset seller setting (as when Admin clicks /reset)
-    reset_seller_setting()
-    assert get_seller_setting() is None
 
-    # 4. Test Referrals & 2,000 ₸ Partner Withdrawal Flow
-    student_id = 777000
-    reg = log_user(student_id, "student_leader", "Айдос")
-    assert reg["is_new"] is True
-    assert get_user_credits(student_id) == 1
+async def test_admin_crud_charts_filters_and_export():
+    print("4. Testing Admin Package CRUD, 7d/30d PNG Charts, User Filters, 360° Card, Project Delete & CSV Export...")
+    # 1. Admin creates a new custom tariff package, edits it, and deletes it
+    custom_pkg = create_custom_tariff_package("Магистрант Pro", 6900, 20, 15, 15)
+    pkg_id = custom_pkg["id"]
+    assert pkg_id in get_dynamic_tariffs()
+    assert get_dynamic_tariffs()[pkg_id]["credits"] == 50
 
-    for i in range(1, 21):
-        friend_id = 800000 + i
-        log_user(friend_id, f"friend_{i}", f"Дос {i}", referrer_id=student_id)
+    update_tariff_setting(pkg_id, price_kzt=7500, no_photo_credits=25, ddg_photo_credits=15, openai_photo_credits=15)
+    assert get_dynamic_tariffs()[pkg_id]["price_kzt"] == 7500
+    assert get_dynamic_tariffs()[pkg_id]["credits"] == 55
 
-    f1_id = 800001
-    f2_id = 800002
-    pay1_id = create_payment_record(f1_id, "vip", 5000, 40, receipt_hash="h1", receipt_number="QR9988776655")
-    approve_payment(pay1_id)
-    pay2_id = create_payment_record(f2_id, "vip", 5000, 40, receipt_hash="h2", receipt_number="QR1122334455")
-    app2 = approve_payment(pay2_id)
-    assert app2["partner_reward_kzt"] == 2000
+    # Disable package -> hidden from users, visible in Admin with is_enabled=False
+    assert toggle_tariff_package(pkg_id) is False
+    assert pkg_id not in get_dynamic_tariffs()
+    assert pkg_id in get_dynamic_tariffs(include_disabled=True)
+    assert get_dynamic_tariffs(include_disabled=True)[pkg_id]["is_enabled"] is False
 
-    w_id, err_ok = create_withdrawal_request(student_id, 2000, "+7 777 111 22 33 Айдос С.")
-    assert w_id is not None and err_ok == ""
+    # Re-enable package -> visible to users again!
+    assert toggle_tariff_package(pkg_id) is True
+    assert pkg_id in get_dynamic_tariffs()
+    assert get_dynamic_tariffs()[pkg_id]["price_kzt"] == 7500
 
-    w_approved = approve_withdrawal_request(w_id)
-    assert w_approved is not None
-    assert w_approved["new_balance"] == 0
+    # Test 3 Presentation Generation Modes (Фотосыз / Фото / OpenAI) toggle & 'Only No-Photo' preset
+    set_only_nophoto_mode()
+    modes_only_np = get_enabled_generation_modes()
+    assert modes_only_np == {"none": True, "ddg": False, "gpt-image-2": False}
+    s_mode_test = get_telegram_session(1001)
+    s_mode_test.withPhotos = True
+    s_mode_test.imageSource = "gpt-image-2"
+    kb_only_np = build_topic_ready_keyboard(s_mode_test)
+    assert s_mode_test.withPhotos is False, "Session must auto-switch to no-photo when photo modes are disabled!"
+    enable_all_generation_modes()
+    assert get_enabled_generation_modes() == {"none": True, "ddg": True, "gpt-image-2": True}
 
-    print("   ✓ Seller Auto-Memorization, Dynamic Tariff Prices, Kaspi Verifier & Partner Withdrawals passed!")
+    # 2. Generate a photo presentation for user 1001 so they appear in 'photo' filter
+    s1 = get_telegram_session(1001)
+    s1.pendingTopic = "Экологиялық жоба негіздері"
+    s1.slideCount = 6
+    s1.templateId = "ecology"
+    s1.withPhotos = True
+    s1.imageSource = "ddg"
+    config.DEBUG_MODE = True
+    await generate_deck_for_session(s1, user_id=1001, slide_count=6)
+    config.DEBUG_MODE = False
+
+    photo_users, total_photo = get_users_paginated(page=0, filter_mode="photo")
+    assert total_photo >= 1 and any(u["user_id"] == 1001 for u in photo_users)
+
+    paid_users = get_segmented_user_ids("vip_paid")
+    assert 1001 in paid_users
+
+    # 3. 360° User Card + Support Complaint Logging + Project Deletion
+    log_support_ticket(1001, "Сәлеметсіз бе, чек бойынша сұрағым бар еді")
+    card_text, projects = format_user_admin_card(1001)
+    assert "360° ҚОЛДАНУШЫ ТАРИХЫ" in card_text
+    assert "4,900 ₸" in card_text
+    assert len(projects) >= 1
+
+    del_res = delete_user_project_by_id(projects[0]["id"])
+    assert del_res is not None
+    _, projects_after = format_user_admin_card(1001)
+    assert len(projects_after) == len(projects) - 1
+
+    # 4. 7-Day & 30-Day PNG Charts
+    png_7d, cap_7d = render_admin_analytics_chart_png(days=7)
+    png_30d, cap_30d = render_admin_analytics_chart_png(days=30)
+    assert len(png_7d) > 5000 and len(png_30d) > 5000
+
+    # 5. AI Cost Tracker & CSV/Excel ZIP Export
+    ai_st = get_ai_cost_stats()
+    assert ai_st["total_calls"] >= 1
+    zip_bytes, fname = export_database_zip_bytes()
+    assert len(zip_bytes) > 500 and fname.endswith(".zip")
+
+    print("   ✓ Admin Package CRUD, 7d/30d Charts, User Filters, 360° Card, Project Delete & CSV Export passed!")
 
 
 if __name__ == "__main__":
-    test_themes_registry()
-    test_json_parser()
-    test_pptx_and_pdf_engines()
-    test_document_to_slide_and_defense_speech()
-    asyncio.run(test_smart_cache_and_saved_projects())
-    test_dynamic_prices_seller_memorization_and_withdrawals()
-    print("\n🎉 ALL COMMERCIAL, KASPI AUTO-SETUP, DYNAMIC PRICE & SYSTEM TESTS PASSED SUCCESSFULLY!")
+    test_config_tariffs_and_cleanup()
+    asyncio.run(test_templates_gost_and_photo_warning())
+    test_three_bucket_credits_and_one_time_promos()
+    asyncio.run(test_admin_crud_charts_filters_and_export())
+    print("\n🎉 ALL COMMERCIAL PRO v2 FEATURES PASSED SUCCESSFULLY!")

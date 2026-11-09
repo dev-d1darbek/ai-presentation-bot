@@ -1,10 +1,115 @@
 """
-Registry of 30 Professional Themes for AI Presentation Studio.
+Registry of 35 Professional Themes for AI Presentation Studio (30 Minimalist + 5 Exclusive "ВАУ" Photo-Editorial Themes).
 """
 from typing import Dict, List, Optional
 from app.core.types import ThemeConfig
 
 THEMES_REGISTRY: Dict[str, ThemeConfig] = {
+    "vogue_photo_editorial": ThemeConfig(
+        id='vogue_photo_editorial',
+        name='Vogue Photo Editorial',
+        nameKz='📸 Vogue Фото-Журнал (ВАУ)',
+        nameRu='📸 Фото-Журнал Vogue',
+        category='Photo-Editorial',
+        description='Журналдық верстка, ірі иллюстрациялық фотолар, кремді фон және алтын-қоңыр типографика',
+        primaryColor='18181B',
+        secondaryColor='B45309',
+        accentColor='D97706',
+        bgColor='FAF7F2',
+        cardBg='FFFFFF',
+        textColor='18181B',
+        textMuted='57534E',
+        borderColor='E7E5E4',
+        isDark=False,
+        isPhotoTheme=True,
+        fontHeading='font-serif font-bold',
+        fontBody='font-sans',
+        recommendedTopics=['мәдениет', 'тарих', 'тұлғалар', 'өнер', 'білім'],
+    ),
+    "apple_vision_photo": ThemeConfig(
+        id='apple_vision_photo',
+        name='Apple Vision Photo Pro',
+        nameKz='📸 Apple Vision Фото (ВАУ)',
+        nameRu='📸 Apple Vision Фото',
+        category='Photo-Editorial',
+        description='Терең графитті фон, жарқын фотокадрлар, премиум технологиялық презентация',
+        primaryColor='FFFFFF',
+        secondaryColor='38BDF8',
+        accentColor='60A5FA',
+        bgColor='090D16',
+        cardBg='131B2E',
+        textColor='F8FAFC',
+        textMuted='94A3B8',
+        borderColor='1E293B',
+        isDark=True,
+        isPhotoTheme=True,
+        fontHeading='font-sans font-extrabold',
+        fontBody='font-sans',
+        recommendedTopics=['технология', 'жасанды интеллект', 'стартап', 'инновация'],
+    ),
+    "natgeo_expedition_photo": ThemeConfig(
+        id='natgeo_expedition_photo',
+        name='National Geographic Visual',
+        nameKz='📸 NatGeo Фото-Экспедиция (ВАУ)',
+        nameRu='📸 NatGeo Фото-Экспедиция',
+        category='Photo-Editorial',
+        description='National Geographic сары жиегі, панорамалық фотосуреттер және деректі стиль',
+        primaryColor='FAFAF9',
+        secondaryColor='FACC15',
+        accentColor='EAB308',
+        bgColor='0C0A09',
+        cardBg='1C1917',
+        textColor='FAFAF9',
+        textMuted='A8A29E',
+        borderColor='292524',
+        isDark=True,
+        isPhotoTheme=True,
+        fontHeading='font-sans font-black',
+        fontBody='font-sans',
+        recommendedTopics=['география', 'табиғат', 'экология', 'туризм', 'биология'],
+    ),
+    "nordic_architect_photo": ThemeConfig(
+        id='nordic_architect_photo',
+        name='Nordic Architect Photo',
+        nameKz='📸 Скандинавиялық Фото-Модерн (ВАУ)',
+        nameRu='📸 Скандинавский Фото-Модерн',
+        category='Photo-Editorial',
+        description='Таза геометриялық фото-блоктар, изумруд пен сұр-көк үйлесімі, бизнес-класс',
+        primaryColor='0F172A',
+        secondaryColor='0D9488',
+        accentColor='0284C7',
+        bgColor='F4F7F9',
+        cardBg='FFFFFF',
+        textColor='0F172A',
+        textMuted='475569',
+        borderColor='CBD5E1',
+        isDark=False,
+        isPhotoTheme=True,
+        fontHeading='font-sans font-bold',
+        fontBody='font-sans',
+        recommendedTopics=['бизнес', 'экономика', 'медицина', 'ғылым', 'диплом'],
+    ),
+    "cyber_neon_photo": ThemeConfig(
+        id='cyber_neon_photo',
+        name='Cyber Neon Visual',
+        nameKz='📸 Неон-Футуризм Фото (ВАУ)',
+        nameRu='📸 Неон-Футуризм Фото',
+        category='Photo-Editorial',
+        description='Неонды күлгін және циан жарығымен көмкерілген AI-фотосуреттер',
+        primaryColor='FFFFFF',
+        secondaryColor='A855F7',
+        accentColor='EC4899',
+        bgColor='090514',
+        cardBg='160D2E',
+        textColor='F5F3FF',
+        textMuted='C4B5FD',
+        borderColor='3B0764',
+        isDark=True,
+        isPhotoTheme=True,
+        fontHeading='font-mono font-bold',
+        fontBody='font-sans',
+        recommendedTopics=['киберспорт', 'болашақ', 'дизайн', 'медиа', 'маркетинг'],
+    ),
     "swiss_minimalism": ThemeConfig(
         id='swiss_minimalism',
         name='Swiss Minimalism',
@@ -581,6 +686,7 @@ THEMES_REGISTRY: Dict[str, ThemeConfig] = {
         textMuted='A3A3A3',
         borderColor='262626',
         isDark=True,
+        isPhotoTheme=True,
         fontHeading='font-sans font-bold',
         fontBody='font-sans',
         recommendedTopics=['кинематограф', 'фотоөнер', 'саяхат', 'кейстер'],
@@ -609,16 +715,29 @@ THEMES_REGISTRY: Dict[str, ThemeConfig] = {
 
 THEMES_LIST: List[ThemeConfig] = list(THEMES_REGISTRY.values())
 
+
 def get_theme_heading_color(theme: ThemeConfig) -> str:
-    dark_blacks = {'000000', '050505', '09090B', '0A0A0A', '0C0A09', '030712', '0B1120', '1A1412', '1E1035'}
+    dark_blacks = {'000000', '050505', '09090B', '0A0A0A', '0C0A09', '030712', '0B1120', '1A1412', '1E1035', '090514'}
     if theme.isDark:
         if theme.primaryColor and theme.primaryColor not in dark_blacks:
             return theme.primaryColor
         return theme.textColor or 'FFFFFF'
     return theme.primaryColor or '111827'
 
-def detect_best_theme_for_topic(topic: str) -> ThemeConfig:
+
+def detect_best_theme_for_topic(topic: str, with_photos: bool = False) -> ThemeConfig:
     t = topic.lower()
+
+    if with_photos:
+        if any(w in t for w in ['интеллект', 'ai', 'ит', 'робот', 'кибер', 'бағдарлама', 'код', 'it', 'технология']):
+            return THEMES_REGISTRY['apple_vision_photo']
+        if any(w in t for w in ['табиғат', 'экология', 'жасыл', 'климат', 'жануарлар', 'география', 'туризм']):
+            return THEMES_REGISTRY['natgeo_expedition_photo']
+        if any(w in t for w in ['бизнес', 'экономика', 'қаржы', 'медицина', 'ғылым', 'диплом']):
+            return THEMES_REGISTRY['nordic_architect_photo']
+        if any(w in t for w in ['киберспорт', 'болашақ', 'маркетинг', 'тренд']):
+            return THEMES_REGISTRY['cyber_neon_photo']
+        return THEMES_REGISTRY['vogue_photo_editorial']
 
     if any(w in t for w in ['интеллект', 'ai', 'ит', 'робот', 'кибер', 'бағдарлама', 'код', 'it']):
         return THEMES_REGISTRY['futuristic_tech']
@@ -643,10 +762,11 @@ def detect_best_theme_for_topic(topic: str) -> ThemeConfig:
 
     return THEMES_REGISTRY['swiss_minimalism']
 
-def get_selected_theme_label(design_id: str, topic: Optional[str] = None) -> str:
+
+def get_selected_theme_label(design_id: str, topic: Optional[str] = None, with_photos: bool = False) -> str:
     if design_id == 'auto' or design_id not in THEMES_REGISTRY:
         if topic:
-            auto_theme = detect_best_theme_for_topic(topic)
+            auto_theme = detect_best_theme_for_topic(topic, with_photos=with_photos)
             return f"Автоматты ({auto_theme.nameKz})"
         return "Автоматты (AI таңдайды)"
     return THEMES_REGISTRY[design_id].nameKz

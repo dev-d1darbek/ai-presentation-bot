@@ -1,6 +1,6 @@
 """
-Document Text Extractor (PDF / DOCX / PPTX / TXT) and Speaker Defense Speech (.docx) Builder.
-Works with zero extra mandatory dependencies using standard library zipfile, xml, zlib, and python-pptx.
+Document Text Extractor (PDF / DOCX / PPTX / TXT) and Multi-Language Speaker Defense Speech (.docx) Builder.
+Supports Kazakh (қазақша), Russian (русский), and English (english).
 """
 import io
 import os
@@ -14,16 +14,13 @@ import logging
 import xml.etree.ElementTree as ET
 from typing import List, Optional, Tuple
 
+import config
 from app.core.types import PresentationData
 
 logger = logging.getLogger(__name__)
 
 
 def extract_text_from_docx(file_bytes: bytes) -> str:
-    """
-    Extracts all text paragraphs and table cells from a .docx file using pure Python zipfile + XML.
-    Requires zero external packages.
-    """
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
             if "word/document.xml" not in z.namelist():
@@ -45,7 +42,6 @@ def extract_text_from_docx(file_bytes: bytes) -> str:
 
 
 def extract_text_from_pptx(file_bytes: bytes) -> str:
-    """Extracts text from an existing .pptx file using python-pptx."""
     try:
         import pptx
         prs = pptx.Presentation(io.BytesIO(file_bytes))
@@ -66,12 +62,8 @@ def extract_text_from_pptx(file_bytes: bytes) -> str:
 
 
 def _extract_pdf_pure_python(file_bytes: bytes) -> str:
-    """
-    Fallback pure-Python PDF text stream extractor using zlib and regex.
-    """
     extracted_chunks: List[str] = []
     try:
-        # Find all stream ... endstream blocks
         stream_pattern = re.compile(rb"stream[\r\n]+(.*?)[\r\n]+endstream", re.DOTALL)
         for match in stream_pattern.finditer(file_bytes):
             raw_stream = match.group(1)
@@ -87,7 +79,6 @@ def _extract_pdf_pure_python(file_bytes: bytes) -> str:
             if not decompressed:
                 continue
 
-            # Look for UTF-16BE hex strings <FEFF...> or literal strings (...)
             for hex_match in re.finditer(rb"<([0-9A-Fa-f]{4,})>", decompressed):
                 hex_str = hex_match.group(1)
                 if len(hex_str) % 2 == 0:
@@ -100,7 +91,6 @@ def _extract_pdf_pure_python(file_bytes: bytes) -> str:
                     except Exception:
                         pass
 
-            # Literal strings inside parentheses
             for lit_match in re.finditer(rb"\(([^()]{2,})\)", decompressed):
                 lit_bytes = lit_match.group(1)
                 for enc in ("utf-8", "cp1251", "latin1"):
@@ -118,11 +108,6 @@ def _extract_pdf_pure_python(file_bytes: bytes) -> str:
 
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
-    """
-    Extracts text from a PDF file using available libraries (pypdf, pypdfium2, fitz),
-    pdftotext CLI, or pure-Python stream decompression.
-    """
-    # 1. Try pypdf / PyPDF2
     for mod_name in ("pypdf", "PyPDF2"):
         try:
             mod = __import__(mod_name)
@@ -134,7 +119,6 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         except Exception:
             pass
 
-    # 2. Try pypdfium2
     try:
         import pypdfium2 as pdfium
         pdf = pdfium.PdfDocument(file_bytes)
@@ -149,7 +133,6 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
     except Exception:
         pass
 
-    # 3. Try pdftotext CLI if available
     pdftotext_bin = shutil.which("pdftotext")
     if pdftotext_bin:
         temp_dir = tempfile.mkdtemp(prefix="pdf_extract_")
@@ -169,15 +152,10 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    # 4. Pure-Python stream extractor
     return _extract_pdf_pure_python(file_bytes)
 
 
 def extract_text_from_uploaded_file(filename: str, file_bytes: bytes) -> Tuple[str, str]:
-    """
-    Detects file extension (.docx, .pdf, .pptx, .txt, .md), extracts text,
-    and returns (clean_title_guess, extracted_text).
-    """
     ext = os.path.splitext(filename.lower())[1]
     base_title = os.path.splitext(os.path.basename(filename))[0].replace("_", " ").replace("-", " ").strip()
     if not base_title:
@@ -198,67 +176,128 @@ def extract_text_from_uploaded_file(filename: str, file_bytes: bytes) -> Tuple[s
             except Exception:
                 pass
 
-    # Clean whitespace
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return base_title, text
 
 
 def generate_speaker_defense_text(presentation: PresentationData) -> str:
     """
-    Generates a complete, natural Speaker Defense Script (Қорғау сөзі / Шпаргалка)
-    in Kazakh for every slide of the presentation.
+    Generates a clean, natural Speaker Defense Script (Қорғау сөзі / Шпаргалка)
+    without repetitive standard numbers.
     """
+    lang = (presentation.language or "қазақша").lower().strip()
+    tmpl = config.TEMPLATE_LIBRARY.get(presentation.template_id or "standard", config.TEMPLATE_LIBRARY["standard"])
     lines: List[str] = []
-    lines.append(f"🎤 ПРЕЗЕНТАЦИЯНЫ ҚОРҒАУ СӨЗІ (ШПАРГАЛКА)")
-    lines.append(f"📌 Тақырып: «{presentation.topic}»")
-    lines.append(f"📄 Слайд саны: {len(presentation.slides)} бет")
+
+    if lang == "русский":
+        lines.append("🎤 РЕЧЬ ДЛЯ ЗАЩИТЫ ПРЕЗЕНТАЦИИ (ШПАРГАЛКА СПИКЕРА)")
+        lines.append(f"📌 Тема: «{presentation.topic}»")
+        lines.append(f"📐 Шаблон: {tmpl['title']} • Слайдов: {len(presentation.slides)}")
+    elif lang == "english":
+        lines.append("🎤 SPEAKER DEFENSE SCRIPT (PRESENTATION NOTES)")
+        lines.append(f"📌 Topic: «{presentation.topic}»")
+        lines.append(f"📐 Template: {tmpl['title']} • Slides: {len(presentation.slides)}")
+    else:
+        lines.append("🎤 ПРЕЗЕНТАЦИЯНЫ ҚОРҒАУ СӨЗІ (СПИКЕР ШПАРГАЛКАСЫ)")
+        lines.append(f"📌 Тақырып: «{presentation.topic}»")
+        lines.append(f"📐 Құрылым үлгісі: {tmpl['title']} • Слайд саны: {len(presentation.slides)} бет")
+
     lines.append("━" * 38)
     lines.append("")
 
     total = len(presentation.slides)
     for idx, slide in enumerate(presentation.slides):
         num = idx + 1
-        lines.append(f"🔹 {num}-СЛАЙД: {slide.title}")
+        slide_lbl = "СЛАЙД" if lang in ("қазақша", "русский") else "SLIDE"
+        lines.append(f"🔹 {num}-{slide_lbl}: {slide.title}")
 
         if idx == 0:
-            lines.append("🗣 Сөйлеу мәтіні:")
-            lines.append(
-                f"«Құрметті комиссия мүшелері, оқытушылар және қатысушылар! "
-                f"Назарларыңызға «{presentation.topic}» тақырыбында дайындалған "
-                f"ғылыми-тәжірибелік презентацияны ұсынамын. {slide.content}»"
-            )
+            lines.append("🗣 Сөйлеу мәтіні:" if lang == "қазақша" else ("🗣 Текст выступления:" if lang == "русский" else "🗣 Opening Speech:"))
+            if lang == "русский":
+                lines.append(
+                    f"«Уважаемые члены комиссии, преподаватели и коллеги! "
+                    f"Представляю вашему вниманию исследование на тему «{presentation.topic}». {slide.content}»"
+                )
+            elif lang == "english":
+                lines.append(
+                    f"«Distinguished committee members, faculty, and colleagues! "
+                    f"I am pleased to present our analytical research on «{presentation.topic}». {slide.content}»"
+                )
+            else:
+                lines.append(
+                    f"«Құрметті комиссия мүшелері, оқытушылар және қатысушылар! "
+                    f"Назарларыңызға «{presentation.topic}» тақырыбында дайындалған "
+                    f"ғылыми-тәжірибелік презентацияны ұсынамын. {slide.content}»"
+                )
         elif idx == total - 1:
-            lines.append("🗣 Қорытынды сөз:")
-            lines.append(
-                f"«Соңғы слайдта зерттеудің қорытынды тұжырымдары көрсетілген. {slide.content} "
-                + (" ".join(slide.key_points[:2]) if slide.key_points else "")
-                + " Назар қойып тыңдағандарыңызға көп рақмет! Сұрақтарыңыз болса, жауап беруге дайынмын.»"
-            )
+            lines.append("🗣 Қорытынды сөз:" if lang == "қазақша" else ("🗣 Заключительное слово:" if lang == "русский" else "🗣 Closing Statement:"))
+            if lang == "русский":
+                lines.append(
+                    f"«На заключительном слайде представлены основные выводы и практические рекомендации работы. {slide.content} "
+                    + (" ".join(slide.key_points[:2]) if slide.key_points else "")
+                    + " Благодарю за внимание! Готов ответить на ваши вопросы.»"
+                )
+            elif lang == "english":
+                lines.append(
+                    f"«On our final slide, we summarize our core findings and strategic conclusions. {slide.content} "
+                    + (" ".join(slide.key_points[:2]) if slide.key_points else "")
+                    + " Thank you for your attention! I welcome any questions.»"
+                )
+            else:
+                lines.append(
+                    f"«Соңғы слайдта зерттеудің қорытынды тұжырымдары мен негізгі қағидалары көрсетілген. {slide.content} "
+                    + (" ".join(slide.key_points[:2]) if slide.key_points else "")
+                    + " Назар қойып тыңдағандарыңызға көп рақмет! Сұрақтарыңызға жауап беруге дайынмын.»"
+                )
         else:
-            lines.append("🗣 Сөйлеу мәтіні:")
-            intro_phrases = [
-                "Келесі слайдта біз мына мәселеге тоқталамыз:",
-                "Назарларыңызды мына маңызды бөлімге аударғым келеді:",
-                "Осы слайдта негізгі деректер мен себеп-салдарлық байланыстар берілген:",
-                "Талдау барысында келесі негізгі фактілер анықталды:",
-            ]
+            lines.append("🗣 Сөйлеу мәтіні:" if lang == "қазақша" else ("🗣 Текст выступления:" if lang == "русский" else "🗣 Speaker Notes:"))
+            if lang == "русский":
+                intro_phrases = [
+                    "На следующем слайде мы подробно рассматриваем:",
+                    "Обратите внимание на ключевые аспекты данного раздела:",
+                    "Здесь приведены основные факты и причинно-следственные связи:",
+                    "В ходе анализа были выявлены следующие важные показатели:",
+                ]
+            elif lang == "english":
+                intro_phrases = [
+                    "Moving to this slide, we examine:",
+                    "Let us highlight the critical findings in this section:",
+                    "Here we present the primary evidence and causal mechanisms:",
+                    "Our analysis reveals the following strategic points:",
+                ]
+            else:
+                intro_phrases = [
+                    "Келесі слайдта біз мына мәселеге тоқталамыз:",
+                    "Назарларыңызды мына маңызды бөлімге аударғым келеді:",
+                    "Осы слайдта негізгі деректер мен себеп-салдарлық байланыстар берілген:",
+                    "Талдау барысында келесі негізгі фактілер анықталды:",
+                ]
             transition = intro_phrases[idx % len(intro_phrases)]
             speech_parts = [f"«{transition} {slide.content}"]
 
             if slide.stats:
                 stat_strs = [f"{s.label} — {s.value}" for s in slide.stats[:3]]
-                speech_parts.append("Негізгі көрсеткіштерге назар аударсақ: " + ", ".join(stat_strs) + ".")
+                speech_parts.append(
+                    ("Негізгі көрсеткіштерге назар аударсақ: " if lang == "қазақша" else ("Ключевые показатели: " if lang == "русский" else "Key metrics include: "))
+                    + ", ".join(stat_strs) + "."
+                )
             elif slide.timeline:
                 tl_strs = [f"{t.title} ({t.desc})" for t in slide.timeline[:3]]
-                speech_parts.append("Даму кезеңдері ретімен: " + "; ".join(tl_strs) + ".")
+                speech_parts.append(
+                    ("Даму кезеңдері ретімен: " if lang == "қазақша" else ("Этапы развития: " if lang == "русский" else "Key stages in order: "))
+                    + "; ".join(tl_strs) + "."
+                )
             elif slide.comparison:
                 a_name = slide.comparison.entityA.name
                 b_name = slide.comparison.entityB.name
                 a_pts = ", ".join(slide.comparison.entityA.points[:2])
                 b_pts = ", ".join(slide.comparison.entityB.points[:2])
-                speech_parts.append(f"Салыстырмалы түрде қарасақ, {a_name} бойынша: {a_pts}. Ал {b_name} бойынша: {b_pts}.")
+                speech_parts.append(f"{a_name}: {a_pts}. {b_name}: {b_pts}.")
             elif slide.key_points:
-                speech_parts.append("Басты дәйектер ретінде мыналарды атап өтуге болады: " + " ".join(slide.key_points[:3]))
+                speech_parts.append(
+                    ("Басты дәйектер ретінде мыналарды атап өтуге болады: " if lang == "қазақша" else ("Основные тезисы: " if lang == "русский" else "Key takeaways: "))
+                    + " ".join(slide.key_points[:3])
+                )
 
             speech_parts[-1] = speech_parts[-1].rstrip(".") + ".»"
             lines.append(" ".join(speech_parts))
@@ -269,10 +308,6 @@ def generate_speaker_defense_text(presentation: PresentationData) -> str:
 
 
 def build_defense_speech_docx(presentation: PresentationData) -> bytes:
-    """
-    Builds a clean, formatted Microsoft Word (.docx) document containing the full
-    Speaker Defense Script (Қорғау сөзі) using pure Python zipfile + WordprocessingML.
-    """
     speech_text = generate_speaker_defense_text(presentation)
     paragraphs = speech_text.split("\n")
 

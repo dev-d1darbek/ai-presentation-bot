@@ -1,6 +1,6 @@
 """
-Persistent reply keyboard for Telegram Bot.
-Includes Projects, Balance/Tariffs, Referral/Partner Earnings, Design, Slide Count, and Admin Support.
+Persistent reply keyboard for Telegram Bot (Commercial Pro v2 Edition).
+Removed TTS button as requested; includes Projects, Balance/Tariffs, Templates, Design, Slide Count, Referral, and Support.
 """
 from typing import Dict, Any
 
@@ -10,8 +10,9 @@ def get_persistent_reply_keyboard() -> Dict[str, Any]:
     return {
         "keyboard": [
             [{"text": "📂 Менің жобаларым"}, {"text": "💳 Баланс / Тарифтер"}],
-            [{"text": "👥 Реферал (Табыс табу)"}, {"text": "🎨 Дизайн таңдау"}],
-            [{"text": "📄 Бет саны"}, {"text": "👨‍💻 Админмен байланыс"}],
+            [{"text": "📐 Үлгілер (Шаблон)"}, {"text": "🎨 Дизайн таңдау"}],
+            [{"text": "📄 Бет саны"}, {"text": "👥 Реферал (Табыс табу)"}],
+            [{"text": "👨‍💻 Админмен байланыс"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
