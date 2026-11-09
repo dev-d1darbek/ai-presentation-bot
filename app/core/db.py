@@ -31,7 +31,8 @@ import httpx
 
 import config
 from app.core.types import PresentationData
-from app.core.redis_cache import redis_get, redis_set
+from app.core.redis_cache import redis_get, redis_set, redis_get_cached_image_b64, redis_set_cached_image_b64
+from app.core.monitoring import inc_metric
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,12 @@ def init_db():
         "ALTER TABLE users ADD COLUMN partner_balance_kzt INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN partner_total_earned_kzt INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN complaints_count INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN persona_style TEXT DEFAULT 'academic_universal'",
+        "ALTER TABLE users ADD COLUMN fraud_score INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN is_flagged INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN churn_promo_sent INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN winback_30d_sent INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN ui_lang TEXT DEFAULT 'kk'",
     ]
     for mig in user_migrations:
         try:
@@ -327,6 +334,37 @@ def init_db():
         slide_count INTEGER,
         design_id TEXT,
         presentation_json TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS image_cache (
+        cache_key TEXT PRIMARY KEY,
+        query_text TEXT,
+        image_source TEXT DEFAULT 'ddg',
+        image_b64 TEXT NOT NULL,
+        hit_count INTEGER DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS user_fingerprints (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        fingerprint_hash TEXT NOT NULL,
+        meta_json TEXT DEFAULT '{}',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS fraud_flags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        severity TEXT DEFAULT 'medium',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
@@ -1898,6 +1936,7 @@ def get_cached_presentation(
     r_val = redis_get(f"pres_cache:{cache_key}")
     if r_val:
         try:
+            inc_metric('cache_hits_total', 1)
             return deserialize_presentation(r_val)
         except Exception:
             pass
@@ -1922,6 +1961,7 @@ def get_cached_presentation(
         conn.commit()
         conn.close()
         try:
+            inc_metric('cache_hits_total', 1)
             return deserialize_presentation(row["presentation_json"])
         except Exception:
             return None
@@ -2269,3 +2309,367 @@ def get_all_user_ids() -> List[int]:
     user_ids = [row["user_id"] for row in cursor.fetchall()]
     conn.close()
     return user_ids
+
+
+# ============================================================================
+# REDIS + SQLITE SLIDE IMAGE CACHE (Суреттерді де кэштеу)
+# ============================================================================
+
+def get_cached_slide_image(query: str, source: str = "ddg") -> Optional[bytes]:
+    """
+    Checks Redis first, then SQLite 'image_cache' table for a cached slide image.
+    Returns raw JPEG bytes if found, else None.
+    """
+    norm = " ".join((query or "").lower().strip().split())
+    if not norm:
+        return None
+    cache_key = f"{source}::{hashlib.sha256(norm.encode('utf-8')).hexdigest()[:28]}"
+
+    # 1. Check Redis / memory cache
+    b64_str = redis_get_cached_image_b64(norm, source=source)
+    if b64_str:
+        try:
+            raw = base64.b64decode(b64_str)
+            if len(raw) > 500:
+                inc_metric("image_cache_hits_total", 1)
+                return raw
+        except Exception:
+            pass
+
+    # 2. Check SQLite / PostgreSQL image_cache table
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT image_b64 FROM image_cache WHERE cache_key = ? LIMIT 1",
+        (cache_key,),
+    ).fetchone()
+    if row and row["image_b64"]:
+        conn.execute(
+            "UPDATE image_cache SET hit_count = hit_count + 1, updated_at = CURRENT_TIMESTAMP WHERE cache_key = ?",
+            (cache_key,),
+        )
+        conn.commit()
+        conn.close()
+        try:
+            raw = base64.b64decode(row["image_b64"])
+            if len(raw) > 500:
+                redis_set_cached_image_b64(norm, row["image_b64"], source=source)
+                inc_metric("image_cache_hits_total", 1)
+                return raw
+        except Exception:
+            return None
+    conn.close()
+    return None
+
+
+def save_cached_slide_image(query: str, img_bytes: bytes, source: str = "ddg") -> None:
+    """Saves a slide image (JPEG bytes) into both Redis (30d TTL) and SQLite 'image_cache'."""
+    norm = " ".join((query or "").lower().strip().split())
+    if not norm or not img_bytes or len(img_bytes) < 500:
+        return
+    cache_key = f"{source}::{hashlib.sha256(norm.encode('utf-8')).hexdigest()[:28]}"
+    b64_str = base64.b64encode(img_bytes).decode("ascii")
+
+    redis_set_cached_image_b64(norm, b64_str, source=source)
+    try:
+        conn = get_db_connection()
+        conn.execute(
+            """
+            INSERT INTO image_cache (cache_key, query_text, image_source, image_b64, hit_count)
+            VALUES (?, ?, ?, ?, 0)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                image_b64 = excluded.image_b64,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (cache_key, norm[:120], source, b64_str),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Failed to save slide image cache: {e}")
+
+
+# ============================================================================
+# CROSS-SELL REFERAT BOT URL (Екінші ботқа сілтеме — Админ өзгерте алады)
+# ============================================================================
+
+def get_referat_bot_url() -> str:
+    saved = get_setting("referat_bot_url")
+    if saved and saved.strip():
+        return saved.strip()
+    return getattr(config, "REFERAT_BOT_URL", "https://t.me/referat_kz_bot")
+
+
+def set_referat_bot_url(url: str) -> None:
+    set_setting("referat_bot_url", url.strip())
+
+
+# ============================================================================
+# USER PERSONA / COURSE STYLE (Медицина -> Ғылыми, Бизнес -> Презентациялық, Мұғалім -> Педагогикалық)
+# ============================================================================
+
+def get_user_persona_style(user_id: int) -> str:
+    prof = get_user_profile(user_id)
+    st = prof.get("persona_style") or "academic_universal"
+    if st not in config.PERSONA_STYLES:
+        return "academic_universal"
+    return st
+
+
+def set_user_persona_style(user_id: int, style_id: str) -> str:
+    if style_id not in config.PERSONA_STYLES:
+        style_id = "academic_universal"
+    conn = get_db_connection()
+    conn.execute("UPDATE users SET persona_style = ? WHERE user_id = ?", (style_id, user_id))
+    conn.commit()
+    conn.close()
+    return style_id
+
+
+# ============================================================================
+# ANTI-FRAUD, DEVICE/CLIENT FINGERPRINTING & SUSPICIOUS ACTIVITY FLAGGING
+# ============================================================================
+
+def flag_suspicious_activity(user_id: int, reason: str, severity: str = "medium") -> int:
+    """Flags a user for suspicious activity (e.g. concurrent receipt spam, shared fingerprint, duplicate receipts)."""
+    score_delta = 3 if severity == "high" else (2 if severity == "medium" else 1)
+    inc_metric("fraud_flags_total", 1)
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT INTO fraud_flags (user_id, reason, severity) VALUES (?, ?, ?)",
+        (user_id, reason[:200], severity),
+    )
+    conn.execute(
+        "UPDATE users SET fraud_score = coalesce(fraud_score, 0) + ?, is_flagged = 1 WHERE user_id = ?",
+        (score_delta, user_id),
+    )
+    row = conn.execute("SELECT fraud_score FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    conn.commit()
+    conn.close()
+    return int(row["fraud_score"] or score_delta) if row else score_delta
+
+
+def record_user_fingerprint(
+    user_id: int,
+    lang_code: str = "",
+    is_premium: bool = False,
+    receipt_meta: str = "",
+    client_ip_hint: str = "",
+) -> Dict[str, Any]:
+    """
+    Records a device/client/receipt-environment fingerprint for `user_id`.
+    If another distinct user account shares the exact same non-trivial fingerprint (multi-account abuse),
+    automatically flags the account!
+    """
+    raw_sig = f"lang={lang_code}|prem={int(bool(is_premium))}|rmeta={receipt_meta.strip()}|ip={client_ip_hint.strip()}"
+    fp_hash = hashlib.sha256(raw_sig.encode("utf-8")).hexdigest()[:24]
+    meta_str = json.dumps(
+        {"lang": lang_code, "is_premium": bool(is_premium), "receipt_meta": receipt_meta[:80], "ip": client_ip_hint},
+        ensure_ascii=False,
+    )
+
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT INTO user_fingerprints (user_id, fingerprint_hash, meta_json) VALUES (?, ?, ?)",
+        (user_id, fp_hash, meta_str),
+    )
+    shared_users = []
+    if receipt_meta.strip() or client_ip_hint.strip():
+        rows = conn.execute(
+            "SELECT DISTINCT user_id FROM user_fingerprints WHERE fingerprint_hash = ? AND user_id != ?",
+            (fp_hash, user_id),
+        ).fetchall()
+        shared_users = [int(r["user_id"]) for r in rows]
+    conn.commit()
+    conn.close()
+
+    flagged = False
+    if len(shared_users) >= 1:
+        flag_suspicious_activity(
+            user_id,
+            f"Бірдей құрылғы/чек метадеректері (Fingerprint сәйкестігі: басқа аккаунттар {shared_users[:3]})",
+            severity="high",
+        )
+        flagged = True
+
+    return {
+        "fingerprint_hash": fp_hash,
+        "shared_with_users": shared_users,
+        "flagged": flagged,
+    }
+
+
+def get_flagged_users(limit: int = 20) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    rows = conn.execute(
+        """
+        SELECT u.user_id, u.username, u.first_name, u.fraud_score, u.is_flagged,
+               (SELECT reason FROM fraud_flags f WHERE f.user_id = u.user_id ORDER BY f.id DESC LIMIT 1) as last_reason,
+               (SELECT count(*) FROM fraud_flags f WHERE f.user_id = u.user_id) as flags_count
+        FROM users u
+        WHERE u.is_flagged = 1 OR u.fraud_score > 0
+        ORDER BY u.fraud_score DESC, u.last_active DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def clear_user_fraud_flags(user_id: int) -> None:
+    conn = get_db_connection()
+    conn.execute("UPDATE users SET fraud_score = 0, is_flagged = 0 WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM fraud_flags WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+# ============================================================================
+# COHORT ANALYSIS + AI CHURN PREDICTION (7d) + 30-DAY WIN-BACK CAMPAIGN
+# ============================================================================
+
+def get_cohort_analysis_stats(today_override: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Computes Cohort Retention & Conversion metrics plus AI Churn-Risk & 30-Day Win-back segments.
+    """
+    today = dt.date.fromisoformat(today_override) if today_override else dt.date.today()
+    conn = get_db_connection()
+    users = [dict(r) for r in conn.execute("SELECT * FROM users").fetchall()]
+    conn.close()
+
+    cohorts: Dict[str, Dict[str, int]] = {}
+    churn_risk_7d: List[Dict[str, Any]] = []
+    inactive_30d: List[Dict[str, Any]] = []
+
+    for u in users:
+        c_raw = str(u.get("created_at") or "")[:10]
+        l_raw = str(u.get("last_streak_date") or str(u.get("last_active") or "")[:10])[:10]
+        try:
+            c_date = dt.date.fromisoformat(c_raw) if len(c_raw) == 10 else today
+        except Exception:
+            c_date = today
+        try:
+            l_date = dt.date.fromisoformat(l_raw) if len(l_raw) == 10 else c_date
+        except Exception:
+            l_date = c_date
+
+        cohort_key = c_date.strftime("%Y-W%W")
+        if cohort_key not in cohorts:
+            cohorts[cohort_key] = {"total": 0, "retained_7d": 0, "paid": 0}
+        cohorts[cohort_key]["total"] += 1
+        if (l_date - c_date).days >= 1 or int(u.get("streak_days") or 1) >= 2:
+            cohorts[cohort_key]["retained_7d"] += 1
+        if int(u.get("has_paid") or 0) == 1:
+            cohorts[cohort_key]["paid"] += 1
+
+        inactive_days = (today - l_date).days
+        credits_left = int(u.get("credits") or 0)
+        if inactive_days >= 30:
+            inactive_30d.append(u)
+        elif inactive_days >= 7 or (inactive_days >= 5 and credits_left <= 3):
+            churn_risk_7d.append(u)
+
+    return {
+        "total_users": len(users),
+        "cohorts": cohorts,
+        "churn_risk_7d_count": len(churn_risk_7d),
+        "inactive_30d_count": len(inactive_30d),
+        "churn_risk_users": churn_risk_7d[:20],
+        "inactive_30d_users": inactive_30d[:20],
+    }
+
+
+def run_ai_churn_and_winback_campaign(today_override: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Executes automated AI Retention & Win-back rules:
+    1. 30-Day Inactive Win-back (>= 30 days inactive & winback_30d_sent == 0):
+       Awards +3 free bonus presentations and sends:
+       «Сізді сағындық! 3 тегін презентация сыйлыққа»
+    2. AI Churn Prediction (7..29 days inactive OR >= 7 days inactive with <= 3 credits & churn_promo_sent == 0):
+       Automatically activates promo code 'COMEBACK50' (-50% on Бір реттік packages) and notifies the user!
+    """
+    today = dt.date.fromisoformat(today_override) if today_override else dt.date.today()
+    conn = get_db_connection()
+    users = [dict(r) for r in conn.execute("SELECT * FROM users").fetchall()]
+
+    winback_30d_awarded: List[Dict[str, Any]] = []
+    churn_7d_promos: List[Dict[str, Any]] = []
+
+    for u in users:
+        uid = int(u["user_id"])
+        l_raw = str(u.get("last_streak_date") or str(u.get("last_active") or "")[:10])[:10]
+        try:
+            l_date = dt.date.fromisoformat(l_raw) if len(l_raw) == 10 else today
+        except Exception:
+            l_date = today
+
+        inactive_days = (today - l_date).days
+        credits_left = int(u.get("credits") or 0)
+
+        # Rule 1: 30+ days inactive -> +3 free presentations ("Сізді сағындық! 3 тегін презентация сыйлыққа")
+        if inactive_days >= 30 and int(u.get("winback_30d_sent") or 0) == 0:
+            conn.execute(
+                """
+                UPDATE users
+                SET credits = credits + 3,
+                    bonus_credits = bonus_credits + 3,
+                    winback_30d_sent = 1
+                WHERE user_id = ?
+                """,
+                (uid,),
+            )
+            winback_30d_awarded.append({
+                "user_id": uid,
+                "inactive_days": inactive_days,
+                "message": (
+                    "💝 <b>Сізді сағындық! 3 тегін презентация сыйлыққа!</b>\n\n"
+                    "Біздің ботқа көптен бері кірмепсіз. Сізге арнайы сыйлық ретінде балансыңызға "
+                    "<b>+3 ТЕГІН презентация</b> («Бір реттік» немесе «Бір реттік + ФОТО» үшін) қосылды!\n"
+                    "👇 Дәл қазір кез келген тақырыпты жазып, дайын презентация алыңыз:"
+                ),
+            })
+        # Rule 2: AI Churn prediction (7+ days inactive OR credits <= 3 after 7 days) -> auto promo code COMEBACK50
+        elif (7 <= inactive_days < 30 or (inactive_days >= 7 and credits_left <= 3)) and int(u.get("churn_promo_sent") or 0) == 0:
+            conn.execute(
+                """
+                UPDATE users
+                SET active_promo_code = 'COMEBACK50',
+                    churn_promo_sent = 1
+                WHERE user_id = ?
+                """,
+                (uid,),
+            )
+            churn_7d_promos.append({
+                "user_id": uid,
+                "inactive_days": inactive_days,
+                "credits_left": credits_left,
+                "promo_code": "COMEBACK50",
+                "message": (
+                    "🎁 <b>Сізге арнайы жеке ұсыныс: -50% ЖЕҢІЛДІК!</b>\n\n"
+                    f"Сізде қазір <b>{credits_left} презентация</b> қалды. Оқуыңыз бен жобаларыңызға көмек ретінде "
+                    "біз сізге автоматты түрде <b>«COMEBACK50» (-50% жеңілдік)</b> промокодын қостық!\n"
+                    "🏷 Енді «Бір реттік» пакеттерді <b>2 есе арзан бағамен</b> ала аласыз!"
+                ),
+            })
+
+    conn.commit()
+    conn.close()
+    return {
+        "winback_30d_awarded": winback_30d_awarded,
+        "churn_7d_promos": churn_7d_promos,
+    }
+
+
+def get_user_ui_lang(user_id: int) -> str:
+    prof = get_user_profile(user_id)
+    val = (prof.get("ui_lang") or "kk").lower().strip()
+    return "ru" if val == "ru" else "kk"
+
+
+def set_user_ui_lang(user_id: int, ui_lang: str) -> str:
+    clean = "ru" if str(ui_lang).lower().strip() == "ru" else "kk"
+    conn = get_db_connection()
+    conn.execute("UPDATE users SET ui_lang = ? WHERE user_id = ?", (clean, user_id))
+    conn.commit()
+    conn.close()
+    return clean

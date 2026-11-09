@@ -12,7 +12,7 @@ from typing import Dict, Any, List, Optional
 import config
 from app.core.types import TelegramSession
 from app.core.themes import THEMES_REGISTRY, THEMES_LIST, get_selected_theme_label
-from app.core.db import get_dynamic_tariffs, get_kaspi_pay_url, get_user_credit_breakdown, get_enabled_generation_modes
+from app.core.db import get_dynamic_tariffs, get_kaspi_pay_url, get_user_credit_breakdown, get_enabled_generation_modes, get_referat_bot_url
 
 
 def ensure_session_valid_mode(session: TelegramSession) -> Dict[str, bool]:
@@ -42,6 +42,7 @@ def build_topic_ready_text(
     theme_label = get_selected_theme_label(session.designId, topic, with_photos=session.withPhotos)
     lang_info = config.SUPPORTED_LANGUAGES.get(session.language, config.SUPPORTED_LANGUAGES["қазақша"])
     tmpl_info = config.TEMPLATE_LIBRARY.get(session.templateId, config.TEMPLATE_LIBRARY["standard"])
+    p_style = config.PERSONA_STYLES.get(getattr(session, "personaStyle", "academic_universal"), config.PERSONA_STYLES["academic_universal"])
 
     warning_block = ""
     if session.withPhotos:
@@ -69,6 +70,7 @@ def build_topic_ready_text(
         f"📌 Тақырып: «{topic}»\n"
         f"🎨 Дизайн: {theme_label}\n"
         f"📐 Құрылым: {tmpl_info['title']} • 🌐 Тіл: {lang_info['label']}\n"
+        f"🎭 Стиль: <b>{p_style['title']}</b>" + (f" • 👶 Кейіпкер: <b>{session.childName}</b>" if getattr(session, "childName", None) else "") + "\n"
         f"{photo_line}{doc_badge}{cred_line}{warning_block}\n\n"
         f"📦 Дайын болғанда бірден <b>3 файл (.PPTX + .PDF + .DOCX Қорғау сөзі)</b> жіберіледі!\n"
         f"👇 Бет санын бассаңыз, презентация бірден дайындалады:"
@@ -127,6 +129,7 @@ def build_topic_ready_keyboard(session: TelegramSession) -> Dict[str, Any]:
 
     theme_label = get_selected_theme_label(session.designId, session.pendingTopic, with_photos=session.withPhotos)
     tmpl_info = config.TEMPLATE_LIBRARY.get(session.templateId, config.TEMPLATE_LIBRARY["standard"])
+    p_style = config.PERSONA_STYLES.get(getattr(session, "personaStyle", "academic_universal"), config.PERSONA_STYLES["academic_universal"])
 
     return {
         "inline_keyboard": [
@@ -148,6 +151,16 @@ def build_topic_ready_keyboard(session: TelegramSession) -> Dict[str, Any]:
                 {
                     "text": f"🎨 Дизайн ({theme_label[:14]})",
                     "callback_data": "open_themes:0:topic",
+                },
+            ],
+            [
+                {
+                    "text": f"🎭 {config.PERSONA_STYLES.get(getattr(session, 'personaStyle', 'academic_universal'), config.PERSONA_STYLES['academic_universal'])['short']}",
+                    "callback_data": "open_persona:topic",
+                },
+                {
+                    "text": "🧚 Ертегі (Бала атымен)",
+                    "callback_data": "start_storybook",
                 },
             ],
         ]
@@ -232,20 +245,47 @@ def build_default_slides_keyboard(session: TelegramSession, is_regenerate: bool 
     return {"inline_keyboard": [row1, row2]}
 
 
-def build_post_generation_keyboard(has_pdf: bool = False) -> Dict[str, Any]:
+def build_post_generation_keyboard(has_pdf: bool = False, ui_lang: str = "kk") -> Dict[str, Any]:
     """
-    Пайдаланушы талабы бойынша:
     Презентация жасалғанда бірден .PPTX + .PDF + .DOCX жіберіледі,
-    ал астында ТЕК «🎨 Дизайнын ауыстыру» және «📄 Бет санын өзгерту» ғана тұрады!
+    астында Дизайн/Бет саны, «➕ Жаңа презентация жасау» және
+    екінші ботқа сілтеме («📝 Осы тақырыпқа реферат керек пе? -20% жеңілдік») тұрады!
     """
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "🎨 Дизайнын ауыстыру", "callback_data": "open_themes:0:reexport"},
-                {"text": "📄 Бет санын өзгерту", "callback_data": "open_slides_regen"},
-            ],
-        ]
-    }
+    is_ru = str(ui_lang).lower().strip() == "ru"
+    rows: List[List[Dict[str, str]]] = [
+        [
+            {"text": "🎨 Сменить дизайн" if is_ru else "🎨 Дизайнын ауыстыру", "callback_data": "open_themes:0:reexport"},
+            {"text": "📄 Изменить кол-во стр." if is_ru else "📄 Бет санын өзгерту", "callback_data": "open_slides_regen"},
+        ],
+        [
+            {"text": "➕ Создать новую презентацию" if is_ru else "➕ Жаңа презентация жасау", "callback_data": "new_presentation"},
+        ],
+    ]
+    ref_url = get_referat_bot_url()
+    if ref_url and ref_url.startswith("http"):
+        rows.append([
+            {
+                "text": "📝 Нужен реферат по этой теме? -20% скидка" if is_ru else "📝 Осы тақырыпқа реферат керек пе? -20% жеңілдік",
+                "url": ref_url,
+            },
+        ])
+    return {"inline_keyboard": rows}
+
+
+def build_persona_styles_keyboard(session: TelegramSession, mode: str = "default") -> Dict[str, Any]:
+    rows: List[List[Dict[str, str]]] = []
+    cur = getattr(session, "personaStyle", "academic_universal")
+    for p_id, p_info in config.PERSONA_STYLES.items():
+        prefix = "✅ " if cur == p_id else ""
+        rows.append([
+            {
+                "text": f"{prefix}{p_info['title']}",
+                "callback_data": f"pick_persona:{p_id}:{mode}",
+            }
+        ])
+    if mode == "topic" and session.pendingTopic:
+        rows.append([{"text": "⬅️ Тақырыпқа оралу", "callback_data": "back_to_topic"}])
+    return {"inline_keyboard": rows}
 
 
 def build_user_projects_keyboard(
@@ -413,6 +453,14 @@ def build_admin_keyboard(pending_withdrawals_count: int = 0, pending_payments_co
             [
                 {"text": f"🧾 Чектер / Қолмен растау{p_badge}", "callback_data": "admin_payments"},
                 {"text": f"💸 Выплаталар{w_badge}", "callback_data": "admin_withdrawals"},
+            ],
+            [
+                {"text": "📊 Когорта & AI Churn / Win-back", "callback_data": "admin_cohorts_churn"},
+                {"text": "🛡 Анти-фрод / Flag-тар", "callback_data": "admin_antifraud"},
+            ],
+            [
+                {"text": "📝 Реферат бот сілтемесі", "callback_data": "admin_referat_url"},
+                {"text": "⚡ Prometheus / Метрикалар", "callback_data": "admin_prometheus"},
             ],
             [
                 {"text": "💾 Базаны экспорттау (CSV/Excel)", "callback_data": "admin_export_db"},
@@ -632,5 +680,171 @@ def build_admin_reply_user_keyboard(user_id: int) -> Dict[str, Any]:
                 {"text": "💬 Жауап жазу", "callback_data": f"reply_user:{user_id}"},
                 {"text": "👤 360° Профилін ашу", "callback_data": f"adm_view_user:{user_id}"},
             ]
+        ]
+    }
+
+
+# ============================================================================
+# BILINGUAL 3-TRACK STEP-BY-STEP WIZARD KEYBOARDS (Academic / Kids / Storybook)
+# ============================================================================
+
+def build_ui_language_keyboard() -> Dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🇰🇿 Қазақша", "callback_data": "set_ui_lang:kk"},
+                {"text": "🇷🇺 Русский", "callback_data": "set_ui_lang:ru"},
+            ]
+        ]
+    }
+
+
+def build_direction_selection_keyboard(ui_lang: str = "kk") -> Dict[str, Any]:
+    """Strictly separated 3 directions: Academic, Kids Presentation (990 ₸), Kids Fairy-Tale Storybook (1490 ₸ / 4990 ₸)."""
+    is_ru = str(ui_lang).lower().strip() == "ru"
+    if is_ru:
+        return {
+            "inline_keyboard": [
+                [{"text": "🎓 Академическая презентация", "callback_data": "select_track:academic"}],
+                [{"text": "🧸 Детская презентация (990 ₸)", "callback_data": "select_track:kids_presentation"}],
+                [{"text": "🧚 Сказка-презентация (1 490 ₸ / 4 990 ₸ с фото)", "callback_data": "select_track:storybook"}],
+            ]
+        }
+    return {
+        "inline_keyboard": [
+            [{"text": "🎓 Академиялық презентация", "callback_data": "select_track:academic"}],
+            [{"text": "🧸 Балаларға арналған презентация (990 ₸)", "callback_data": "select_track:kids_presentation"}],
+            [{"text": "🧚 Ертегі-презентация (1 490 ₸ / 4 990 ₸ фотомен)", "callback_data": "select_track:storybook"}],
+        ]
+    }
+
+
+def build_wiz_storybook_mode_keyboard(ui_lang: str = "kk") -> Dict[str, Any]:
+    """Lets user choose between Storybook WITH child's photo (4,990 ₸ GPT-4o Vision) or WITHOUT child's photo (1,490 ₸)."""
+    is_ru = str(ui_lang).lower().strip() == "ru"
+    if is_ru:
+        return {
+            "inline_keyboard": [
+                [{"text": "📸 С фото ребенка (4 990 ₸ • GPT-4o Аватар)", "callback_data": "wiz_story_mode:with_photo"}],
+                [{"text": "🧚 Без фото ребенка (1 490 ₸)", "callback_data": "wiz_story_mode:no_photo"}],
+                [{"text": "⬅️ Назад к выбору направления", "callback_data": "new_presentation"}],
+            ]
+        }
+    return {
+        "inline_keyboard": [
+            [{"text": "📸 Бала фотосымен (4 990 ₸ • GPT-4o Аватар)", "callback_data": "wiz_story_mode:with_photo"}],
+            [{"text": "🧚 Бала фотосынсыз (1 490 ₸)", "callback_data": "wiz_story_mode:no_photo"}],
+            [{"text": "⬅️ Бағыт таңдауға оралу", "callback_data": "new_presentation"}],
+        ]
+    }
+
+
+def build_wiz_academic_lang_keyboard(ui_lang: str = "kk") -> Dict[str, Any]:
+    is_ru = str(ui_lang).lower().strip() == "ru"
+    return {
+        "inline_keyboard": [
+            [{"text": "🇰🇿 Қазақша", "callback_data": "wiz_acad_lang:қазақша"}],
+            [{"text": "🇷🇺 Русский (Орысша)", "callback_data": "wiz_acad_lang:русский"}],
+            [{"text": "🇬🇧 English (Ағылшынша)", "callback_data": "wiz_acad_lang:english"}],
+            [{"text": "⬅️ Назад к выбору направления" if is_ru else "⬅️ Бағыт таңдауға оралу", "callback_data": "new_presentation"}],
+        ]
+    }
+
+
+def build_wiz_academic_slides_keyboard(ui_lang: str = "kk") -> Dict[str, Any]:
+    is_ru = str(ui_lang).lower().strip() == "ru"
+    unit = "слайдов" if is_ru else "бет"
+    return {
+        "inline_keyboard": [
+            [
+                {"text": f"📄 8 {unit}", "callback_data": "wiz_acad_slides:8"},
+                {"text": f"📄 10 {unit}", "callback_data": "wiz_acad_slides:10"},
+                {"text": f"📄 12 {unit}", "callback_data": "wiz_acad_slides:12"},
+            ],
+            [
+                {"text": f"📄 15 {unit}", "callback_data": "wiz_acad_slides:15"},
+                {"text": f"📄 20 {unit}", "callback_data": "wiz_acad_slides:20"},
+                {"text": f"📄 25 {unit}", "callback_data": "wiz_acad_slides:25"},
+            ],
+            [{"text": "⬅️ Назад" if is_ru else "⬅️ Артқа", "callback_data": "new_presentation"}],
+        ]
+    }
+
+
+def build_wiz_academic_photo_keyboard(ui_lang: str = "kk") -> Dict[str, Any]:
+    is_ru = str(ui_lang).lower().strip() == "ru"
+    modes = get_enabled_generation_modes()
+    rows: List[List[Dict[str, str]]] = []
+    if modes.get("none", True):
+        rows.append([
+            {
+                "text": "🚫 Без фото (Академический)" if is_ru else "🚫 Фотосыз жасау («Бір реттік»)",
+                "callback_data": "wiz_acad_gen:none",
+            }
+        ])
+    if modes.get("ddg", True):
+        rows.append([
+            {
+                "text": "🖼 С фото (Из интернета / ИИ)" if is_ru else "🖼 Фотомен жасау (Интернет/ЖИ)",
+                "callback_data": "wiz_acad_gen:ddg",
+            }
+        ])
+    if modes.get("gpt-image-2", True):
+        rows.append([
+            {
+                "text": "✨ С фото OpenAI (gpt-image-2)" if is_ru else "✨ OpenAI Фотомен жасау (gpt-image-2)",
+                "callback_data": "wiz_acad_gen:gpt-image-2",
+            }
+        ])
+    rows.append([{"text": "⬅️ Назад" if is_ru else "⬅️ Артқа", "callback_data": "new_presentation"}])
+    return {"inline_keyboard": rows}
+
+
+def build_wiz_kids_lang_keyboard(ui_lang: str = "kk") -> Dict[str, Any]:
+    is_ru = str(ui_lang).lower().strip() == "ru"
+    return {
+        "inline_keyboard": [
+            [{"text": "🇰🇿 Қазақша", "callback_data": "wiz_kids_lang:қазақша"}],
+            [{"text": "🇷🇺 Русский (Орысша)", "callback_data": "wiz_kids_lang:русский"}],
+            [{"text": "🇬🇧 English (Ағылшынша)", "callback_data": "wiz_kids_lang:english"}],
+            [{"text": "⬅️ Назад к выбору направления" if is_ru else "⬅️ Бағыт таңдауға оралу", "callback_data": "new_presentation"}],
+        ]
+    }
+
+
+def build_wiz_kids_slides_keyboard(ui_lang: str = "kk") -> Dict[str, Any]:
+    is_ru = str(ui_lang).lower().strip() == "ru"
+    unit = "слайдов" if is_ru else "бет"
+    return {
+        "inline_keyboard": [
+            [
+                {"text": f"🧸 6 {unit}", "callback_data": "wiz_kids_gen:6"},
+                {"text": f"🧸 8 {unit}", "callback_data": "wiz_kids_gen:8"},
+                {"text": f"🧸 10 {unit}", "callback_data": "wiz_kids_gen:10"},
+            ],
+            [
+                {"text": f"🧸 12 {unit}", "callback_data": "wiz_kids_gen:12"},
+                {"text": f"🧸 15 {unit}", "callback_data": "wiz_kids_gen:15"},
+            ],
+            [{"text": "⬅️ Назад" if is_ru else "⬅️ Артқа", "callback_data": "new_presentation"}],
+        ]
+    }
+
+
+def build_wiz_storybook_slides_keyboard(ui_lang: str = "kk") -> Dict[str, Any]:
+    is_ru = str(ui_lang).lower().strip() == "ru"
+    unit = "страниц" if is_ru else "бет"
+    return {
+        "inline_keyboard": [
+            [
+                {"text": f"🧚 6 {unit}", "callback_data": "wiz_story_gen:6"},
+                {"text": f"🧚 8 {unit}", "callback_data": "wiz_story_gen:8"},
+                {"text": f"🧚 10 {unit}", "callback_data": "wiz_story_gen:10"},
+            ],
+            [
+                {"text": f"🧚 12 {unit}", "callback_data": "wiz_story_gen:12"},
+                {"text": f"🧚 15 {unit}", "callback_data": "wiz_story_gen:15"},
+            ],
+            [{"text": "⬅️ Назад" if is_ru else "⬅️ Артқа", "callback_data": "new_presentation"}],
         ]
     }

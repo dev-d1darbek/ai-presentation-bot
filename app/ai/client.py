@@ -200,6 +200,10 @@ class AIClient:
         language: str = "қазақша",
         template_id: str = "standard",
         with_photos: bool = False,
+        persona_style: str = "academic_universal",
+        is_storybook: bool = False,
+        child_name: Optional[str] = None,
+        child_avatar_desc: Optional[str] = None,
     ) -> PresentationData:
         raw_slides = parsed.get("slides", [])
         slides: List[SlideContent] = []
@@ -240,6 +244,10 @@ class AIClient:
             design_id=parsed.get("design_id") or theme_id,
             language=language,
             template_id=template_id,
+            persona_style=persona_style,
+            is_storybook=is_storybook,
+            child_name=child_name,
+            child_avatar_desc=child_avatar_desc,
             with_photos=with_photos,
             slide_count=len(slides),
             slides=slides,
@@ -259,6 +267,10 @@ class AIClient:
         with_photos: bool = False,
         is_paid_user: bool = False,
         user_id: Optional[int] = None,
+        persona_style: str = "academic_universal",
+        is_storybook: bool = False,
+        child_name: Optional[str] = None,
+        child_avatar_desc: Optional[str] = None,
     ) -> PresentationData:
         """
         AI Cost Optimization Routing:
@@ -278,6 +290,10 @@ class AIClient:
             document_text=document_text,
             template_id=template_id,
             with_photos=with_photos,
+            persona_style=persona_style,
+            is_storybook=is_storybook,
+            child_name=child_name,
+            child_avatar_desc=child_avatar_desc,
         )
 
         # 1. Primary AI: DeepSeek (used for both free and paid users)
@@ -290,6 +306,7 @@ class AIClient:
                     parsed, topic, count, selected_theme.id, 98,
                     document_text=document_text, language=language,
                     template_id=template_id, with_photos=with_photos,
+                    persona_style=persona_style, is_storybook=is_storybook, child_name=child_name, child_avatar_desc=child_avatar_desc,
                 )
 
         # 2. Expensive backup models (Gemini & OpenAI): ONLY for paid users!
@@ -325,4 +342,8 @@ class AIClient:
             language=language,
             template_id=template_id,
             with_photos=with_photos,
+            persona_style=persona_style,
+            is_storybook=is_storybook,
+            child_name=child_name,
+            child_avatar_desc=child_avatar_desc,
         )

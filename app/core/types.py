@@ -1,5 +1,7 @@
 """
-Data models and types for AI Presentation Studio (Pro Edition with Photo Layouts, Templates & Multi-Language).
+Data models and types for AI Presentation Studio (Commercial Pro v3 Edition).
+Supports Photo Layouts, Full-Photo Children's Storybooks ('storybook_full_photo'),
+Persona Styles (Medical->Scientific, Business->Pitch, Teacher->Pedagogical), Templates & Multi-Language.
 """
 from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field
@@ -21,6 +23,7 @@ LayoutType = Literal[
     'photo_hero',
     'photo_split',
     'photo_magazine',
+    'storybook_full_photo',
 ]
 
 
@@ -105,6 +108,10 @@ class PresentationData(BaseModel):
     design_id: str
     language: str = "қазақша"
     template_id: str = "standard"
+    persona_style: str = "academic_universal"
+    is_storybook: bool = False
+    child_name: Optional[str] = None
+    child_avatar_desc: Optional[str] = None
     with_photos: bool = False
     image_source: str = "none"  # "none" | "ddg" | "gpt-image-2"
     slide_count: int
@@ -117,8 +124,15 @@ class PresentationData(BaseModel):
 class TelegramSession(BaseModel):
     slideCount: int = 15
     designId: str = "auto"
+    uiLanguage: str = "kk"  # "kk" (Қазақша) | "ru" (Русский)
+    flowType: str = "academic"  # "academic" | "kids_presentation" | "storybook"
     language: str = "қазақша"
     templateId: str = "standard"
+    personaStyle: str = "academic_universal"
+    isStorybook: bool = False
+    storybookWithPhoto: bool = False
+    childName: Optional[str] = None
+    childAvatarDesc: Optional[str] = None
     withPhotos: bool = False
     imageSource: str = "ddg"  # "ddg" (DuckDuckGo) | "gpt-image-2" (OpenAI Low)
     activePromoCode: Optional[str] = None

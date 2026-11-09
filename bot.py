@@ -71,6 +71,18 @@ from app.core.db import (
     toggle_generation_mode,
     set_only_nophoto_mode,
     enable_all_generation_modes,
+    get_referat_bot_url,
+    set_referat_bot_url,
+    get_user_persona_style,
+    set_user_persona_style,
+    get_user_ui_lang,
+    set_user_ui_lang,
+    record_user_fingerprint,
+    flag_suspicious_activity,
+    get_flagged_users,
+    clear_user_fraud_flags,
+    get_cohort_analysis_stats,
+    run_ai_churn_and_winback_campaign,
     create_payment_record,
     approve_payment,
     reject_payment,
@@ -94,13 +106,15 @@ from app.core.db import (
     export_database_zip_bytes,
     track_funnel_event,
 )
-from app.core.redis_cache import redis_check_rate_limit
+from app.core.redis_cache import redis_check_rate_limit, acquire_receipt_lock, release_receipt_lock
+from app.core.monitoring import send_admin_error_alert, start_prometheus_http_server, get_prometheus_metrics_snapshot, render_prometheus_text, inc_metric
 from app.core.verifier import (
     verify_kaspi_receipt,
     save_company_from_first_receipt,
     find_qr_url,
 )
 from app.core.doc_parser import extract_text_from_uploaded_file
+from app.core.image_search import analyze_child_photo_gpt4o_vision
 from app.bot.session import get_telegram_session, save_session
 from app.bot.keyboards.reply import get_persistent_reply_keyboard
 from app.bot.keyboards.inline import (
@@ -108,6 +122,16 @@ from app.bot.keyboards.inline import (
     build_topic_ready_text,
     build_topic_ready_keyboard,
     build_templates_keyboard,
+    build_persona_styles_keyboard,
+    build_ui_language_keyboard,
+    build_direction_selection_keyboard,
+    build_wiz_academic_lang_keyboard,
+    build_wiz_academic_slides_keyboard,
+    build_wiz_academic_photo_keyboard,
+    build_wiz_kids_lang_keyboard,
+    build_wiz_kids_slides_keyboard,
+    build_wiz_storybook_slides_keyboard,
+    build_wiz_storybook_mode_keyboard,
     build_clean_themes_keyboard,
     build_default_slides_keyboard,
     build_post_generation_keyboard,
@@ -148,6 +172,9 @@ from app.bot.handlers.commands import (
     get_slides_message,
     get_design_message,
     get_templates_message,
+    get_persona_styles_message,
+    get_language_prompt_message,
+    get_direction_menu_message,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -186,6 +213,11 @@ class BotStates(StatesGroup):
     waiting_for_new_package = State()
     waiting_for_promo_code = State()
     waiting_for_admin_new_promo = State()
+    waiting_for_storybook_photo = State()
+    waiting_for_storybook_input = State()
+    waiting_for_referat_bot_url = State()
+    wiz_academic_topic = State()
+    wiz_kids_pres_topic = State()
 
 
 def dict_to_inline_markup(d: dict) -> InlineKeyboardMarkup:
@@ -339,7 +371,7 @@ async def send_all_three_presentation_files(
                 f"🎫 Қалған жалпы лимит: <b>{rem_credits} презентация</b>\n\n"
                 f"👇 Дизайнын немесе бет санын өзгерту:"
             ),
-            reply_markup=dict_to_inline_markup(build_post_generation_keyboard()),
+            reply_markup=dict_to_inline_markup(build_post_generation_keyboard(ui_lang=getattr(session, 'uiLanguage', 'kk'))),
         )
 
 
@@ -501,6 +533,7 @@ async def execute_generation(
             else:
                 add_user_credits(uid, 1, is_bonus=True)
         logger.error(f"Generation error (credit refunded): {e}", exc_info=True)
+        await send_admin_error_alert(bot, e, context_label="execute_generation", user_id=uid)
         await bot.send_message(
             chat_id=chat_id,
             text="❌ Қате орын алды. Лимитіңіз сақталды — қайта көріңіз.",
@@ -613,21 +646,250 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
         await message.answer(card_text, reply_markup=dict_to_inline_markup(card_kb))
         return
 
-    text, kb = get_start_message(
-        message.chat.id,
-        is_new=reg_res.get("is_new", False),
-        streak_days=reg_res.get("streak_days", 1),
-        streak_bonus=reg_res.get("streak_bonus_awarded", False),
-    )
-    await message.answer(text, reply_markup=dict_to_reply_markup(kb))
+    lang_prompt_text, lang_prompt_kb = get_language_prompt_message()
+    await message.answer(lang_prompt_text, reply_markup=dict_to_inline_markup(lang_prompt_kb))
+
+
+
+
+@router.message(Command("new"))
+@router.message(F.text.in_({"➕ Жаңа презентация жасау", "➕ Создать новую презентацию"}))
+async def cmd_new_presentation(message: Message, state: FSMContext):
+    await state.clear()
+    text, kb = get_direction_menu_message(message.chat.id)
+    await message.answer(text, reply_markup=dict_to_inline_markup(kb))
+
+
+@router.message(Command("lang"))
+@router.message(F.text.in_({"🌐 Тіл / Язык", "🌐 Язык", "🌐 Тіл"}))
+async def cmd_change_ui_lang(message: Message, state: FSMContext):
+    await state.clear()
+    text, kb = get_language_prompt_message()
+    await message.answer(text, reply_markup=dict_to_inline_markup(kb))
+
+
+@router.message(BotStates.wiz_academic_topic)
+async def process_wiz_academic_topic(message: Message, state: FSMContext):
+    await state.clear()
+    raw = (message.text or "").strip()
+    if len(raw) < 2:
+        await message.answer("⚠️ Тақырыпты жазыңыз / Напишите тему.")
+        return
+    clean_topic, inline_count, theme_mention = parse_user_input(raw)
+    session = get_telegram_session(message.chat.id)
+    session.flowType = "academic"
+    session.isStorybook = False
+    session.pendingTopic = clean_topic
+    session.pendingDocumentText = None
+    if inline_count:
+        session.slideCount = inline_count
+    if theme_mention:
+        session.designId = theme_mention
+    save_session(message.chat.id, session)
+
+    ui_lang = getattr(session, "uiLanguage", "kk")
+    if ui_lang == "ru":
+        txt = (
+            f"🎓 <b>Академическая презентация</b>\n"
+            f"📌 Тема: <b>«{clean_topic}»</b>\n\n"
+            f"🌐 <b>Шаг 2: На каком языке создать презентацию?</b>"
+        )
+    else:
+        txt = (
+            f"🎓 <b>Академиялық презентация</b>\n"
+            f"📌 Тақырып: <b>«{clean_topic}»</b>\n\n"
+            f"🌐 <b>2-қадам: Презентация қай тілде жасалсын?</b>"
+        )
+    await message.answer(txt, reply_markup=dict_to_inline_markup(build_wiz_academic_lang_keyboard(ui_lang)))
+
+
+@router.message(BotStates.wiz_kids_pres_topic)
+async def process_wiz_kids_topic(message: Message, state: FSMContext):
+    await state.clear()
+    raw = (message.text or "").strip()
+    if len(raw) < 2:
+        await message.answer("⚠️ Тақырыпты жазыңыз / Напишите тему.")
+        return
+    clean_topic, inline_count, _ = parse_user_input(raw)
+    session = get_telegram_session(message.chat.id)
+    session.flowType = "kids_presentation"
+    session.isStorybook = False
+    session.templateId = "kids_edu"
+    session.personaStyle = "kids_fairy"
+    session.withPhotos = True
+    session.imageSource = "gpt-image-2"
+    session.pendingTopic = clean_topic
+    session.pendingDocumentText = None
+    if inline_count:
+        session.slideCount = inline_count
+    save_session(message.chat.id, session)
+
+    ui_lang = getattr(session, "uiLanguage", "kk")
+    if ui_lang == "ru":
+        txt = (
+            f"🧸 <b>Детская презентация</b>\n"
+            f"📌 Тема: <b>«{clean_topic}»</b>\n\n"
+            f"🌐 <b>Шаг 2: На каком языке создать презентацию?</b>"
+        )
+    else:
+        txt = (
+            f"🧸 <b>Балалар презентациясы</b>\n"
+            f"📌 Тақырып: <b>«{clean_topic}»</b>\n\n"
+            f"🌐 <b>2-қадам: Презентация қай тілде жасалсын?</b>"
+        )
+    await message.answer(txt, reply_markup=dict_to_inline_markup(build_wiz_kids_lang_keyboard(ui_lang)))
 
 
 @router.message(Command("templates"))
-@router.message(F.text.in_({"📐 Үлгілер (ГОСТ / Шаблон)", "📐 Үлгілер (Шаблон)"}))
+@router.message(F.text.in_({"📐 Үлгілер (ГОСТ / Шаблон)", "📐 Үлгілер (Шаблон)", "📐 Шаблоны"}))
 async def cmd_templates(message: Message, state: FSMContext):
     await state.clear()
     text, kb = get_templates_message(message.chat.id)
     await message.answer(text, reply_markup=dict_to_inline_markup(kb))
+
+@router.message(Command("style"))
+@router.message(F.text.in_({"🎭 Стиль (Мед/Бизнес/Мұғалім)", "🎭 Стиль таңдау"}))
+async def cmd_persona_style(message: Message, state: FSMContext):
+    await state.clear()
+    text, kb = get_persona_styles_message(message.chat.id, mode="default")
+    await message.answer(text, reply_markup=dict_to_inline_markup(kb))
+
+
+@router.message(Command("storybook"))
+@router.message(F.text.in_({"🧚 Ертегі / Балалар", "🧚 Ертегі-презентация"}))
+async def cmd_storybook_menu(message: Message, state: FSMContext):
+    await state.clear()
+    session = get_telegram_session(message.chat.id)
+    ui_lang = getattr(session, "uiLanguage", "kk")
+    is_ru = ui_lang == "ru"
+    txt = (
+        "🧚 <b>СКАЗКА-ПРЕЗЕНТАЦИЯ (ТОЛЬКО ИЗ ФОТО)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "1️⃣ <b>📸 С фото ребенка (4 990 ₸):</b> Вы загружаете фото ребенка → ИИ (GPT-4o Vision) подробно описывает черты лица, прическу, глаза и одежду, создавая постоянный «цифровой аватар» для каждой страницы сказки!\n"
+        "2️⃣ <b>🧚 Без фото ребенка (1 490 ₸):</b> Иллюстрированная сказка по имени ребенка и теме.\n\n"
+        "👇 <b>Выберите вариант сказки:</b>"
+        if is_ru
+        else "🧚 <b>ЕРТЕГІ-ПРЕЗЕНТАЦИЯ (ТЕК ФОТОДАН ТҰРАДЫ)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "1️⃣ <b>📸 Бала фотосымен (4 990 ₸):</b> Баланың фотосын жүктейсіз → GPT-4o Vision баланың бет-әлпетін, шаш түсін, көзін, киімін сипаттап, тұрақты «цифрлық аватар» жасайды және әр ертегі бетінде сол бейнені қолданады!\n"
+        "2️⃣ <b>🧚 Бала фотосынсыз (1 490 ₸):</b> Баланың аты мен ертегі тақырыбы бойынша иллюстрацияланған ертегі.\n\n"
+        "👇 <b>Ертегі түрін таңдаңыз:</b>"
+    )
+    await message.answer(txt, reply_markup=dict_to_inline_markup(build_wiz_storybook_mode_keyboard(ui_lang)))
+
+
+@router.message(BotStates.waiting_for_storybook_photo, F.photo)
+async def process_storybook_child_photo(message: Message, state: FSMContext, bot: Bot):
+    uid = message.from_user.id if message.from_user else message.chat.id
+    session = get_telegram_session(message.chat.id)
+    ui_lang = getattr(session, "uiLanguage", "kk")
+    is_ru = ui_lang == "ru"
+
+    wait_msg = await message.answer(
+        "🔎 <b>GPT-4o Vision анализирует фото ребенка (создаем цифровой аватар)...</b>"
+        if is_ru
+        else "🔎 <b>Баланың фотосы GPT-4o Vision арқылы талдануда (тұрақты цифрлық аватар жасалуда)...</b>"
+    )
+    photo_obj = message.photo[-1]
+    buf = io.BytesIO()
+    await bot.download(photo_obj, destination=buf)
+    avatar_desc = await analyze_child_photo_gpt4o_vision(buf.getvalue(), user_id=uid)
+
+    session.isStorybook = True
+    session.storybookWithPhoto = True
+    session.childAvatarDesc = avatar_desc
+    save_session(message.chat.id, session)
+
+    await state.set_state(BotStates.waiting_for_storybook_input)
+    done_txt = (
+        f"✅ <b>Цифровой аватар ребенка готов!</b>\n"
+        f"🧬 <i>Описание для DALL·E 3:</i> <code>{avatar_desc}</code>\n\n"
+        f"👶 <b>Шаг 2: Теперь напишите имя ребенка и тему сказки:</b>\n"
+        f"Например: <code>Айсултан — Волшебное путешествие в космос</code>"
+        if is_ru
+        else f"✅ <b>Баланың тұрақты цифрлық аватары дайын!</b>\n"
+        f"🧬 <i>DALL·E 3 сипаттамасы:</i> <code>{avatar_desc}</code>\n\n"
+        f"👶 <b>2-қадам: Енді баланың аты мен ертегі тақырыбын жазыңыз:</b>\n"
+        f"Мысалы: <code>Айсұлтан — Ғарышқа сиқырлы саяхат</code>"
+    )
+    await wait_msg.edit_text(done_txt)
+
+
+@router.message(BotStates.waiting_for_storybook_photo)
+async def process_storybook_photo_fallback_msg(message: Message):
+    session = get_telegram_session(message.chat.id)
+    is_ru = getattr(session, "uiLanguage", "kk") == "ru"
+    await message.answer(
+        "📸 Пожалуйста, отправьте <b>фотографию ребенка</b> (или нажмите /cancel)."
+        if is_ru
+        else "📸 Баланың <b>фотосуретін</b> жіберіңіз (немесе бас тарту үшін /cancel)."
+    )
+
+
+@router.message(BotStates.waiting_for_storybook_input)
+async def process_storybook_input(message: Message, state: FSMContext):
+    await state.clear()
+    uid = message.from_user.id if message.from_user else message.chat.id
+    raw = (message.text or "").strip()
+    if len(raw) < 2:
+        await message.answer("⚠️ Баланың аты мен ертегі тақырыбын жазыңыз.")
+        return
+
+    parts = [p.strip() for p in re.split(r"[-—:|,]", raw, maxsplit=1) if p.strip()]
+    if len(parts) == 2:
+        child_name, story_topic = parts[0], parts[1]
+    else:
+        words = raw.split()
+        child_name = words[0]
+        story_topic = " ".join(words[1:]) if len(words) > 1 else f"{child_name} сиқырлы саяхаты"
+
+    session = get_telegram_session(message.chat.id)
+    session.isStorybook = True
+    session.childName = child_name
+    session.pendingTopic = f"{child_name}: {story_topic}"
+    session.templateId = "storybook"
+    session.personaStyle = "kids_fairy"
+    session.withPhotos = True
+    session.imageSource = "gpt-image-2"
+    save_session(message.chat.id, session)
+
+    ui_lang = getattr(session, "uiLanguage", "kk")
+    session.language = "русский" if ui_lang == "ru" else "қазақша"
+    save_session(message.chat.id, session)
+    if ui_lang == "ru":
+        step2_txt = (
+            f"🧚 <b>Сказка-презентация (Только из фото)</b>\n"
+            f"👶 Главный герой: <b>{child_name}</b>\n"
+            f"📖 Сюжет: <b>«{story_topic}»</b>\n\n"
+            f"📄 <b>Шаг 2: Выберите количество страниц сказки</b> (после нажатия сразу начнется генерация):"
+        )
+    else:
+        step2_txt = (
+            f"🧚 <b>Ертегі-презентация (Тек фотодан)</b>\n"
+            f"👶 Басты кейіпкер: <b>{child_name}</b>\n"
+            f"📖 Тақырып: <b>«{story_topic}»</b>\n\n"
+            f"📄 <b>2-қадам: Неше беттік ертегі жасаймыз?</b> (Бет санын бассаңыз, бірден генерация басталады):"
+        )
+    await message.answer(
+        step2_txt,
+        reply_markup=dict_to_inline_markup(build_wiz_storybook_slides_keyboard(ui_lang)),
+    )
+
+
+@router.message(BotStates.waiting_for_referat_bot_url)
+async def process_new_referat_bot_url(message: Message, state: FSMContext):
+    await state.clear()
+    url = (message.text or "").strip()
+    if not url.startswith("http"):
+        await message.answer("⚠️ Қате сілтеме. Сілтеме <code>https://t.me/...</code> деп басталуы керек.")
+        return
+    set_referat_bot_url(url)
+    await message.answer(
+        f"✅ <b>Екінші боттың (Реферат бот) сілтемесі сәтті жаңартылды!</b>\n"
+        f"🔗 Жаңа сілтеме: <code>{url}</code>\n\n"
+        f"Енді әр презентация жасалған соң астында <b>«📝 Осы тақырыпқа реферат керек пе? -20% жеңілдік»</b> батырмасы осы сілтемеге апарады!"
+    )
+
 
 
 @router.message(Command("promo"))
@@ -760,7 +1022,7 @@ async def cmd_design(message: Message, state: FSMContext):
 
 
 @router.message(Command("projects"))
-@router.message(F.text == "📂 Менің жобаларым")
+@router.message(F.text.in_({"📂 Менің жобаларым", "📂 Мои проекты"}))
 async def cmd_projects(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id if message.from_user else message.chat.id
@@ -1324,6 +1586,47 @@ async def process_kaspi_receipt_upload(
     uid = message.from_user.id if message.from_user else message.chat.id
     u_tag = f"@{message.from_user.username}" if (message.from_user and message.from_user.username) else str(uid)
 
+    # 1. БІРНЕШЕ ЧЕКТІ БІР УАҚЫТТА ЖІБЕРУДІ БЛОКТАУ (Atomic Concurrent Receipt Lock)
+    if not acquire_receipt_lock(uid):
+        flag_suspicious_activity(uid, "Бір уақытта бірнеше чекті қатарынан жіберу (Concurrent receipt upload)", severity="medium")
+        inc_metric("receipts_blocked_concurrent", 1)
+        await message.answer(
+            "⏳ <b>Алдыңғы чегіңіз тексерілуде!</b>\n"
+            "Бір уақытта бірнеше чек жіберуге болмайды. Тексеру аяқталғанша күте тұрыңыз."
+        )
+        return
+
+    try:
+        await _process_kaspi_receipt_locked(message, bot, file_bytes, filename, session, uid, u_tag)
+    except Exception as e:
+        await send_admin_error_alert(bot, e, context_label="process_kaspi_receipt_upload", user_id=uid)
+        raise
+    finally:
+        release_receipt_lock(uid)
+
+
+async def _process_kaspi_receipt_locked(
+    message: Message,
+    bot: Bot,
+    file_bytes: bytes,
+    filename: str,
+    session,
+    uid: int,
+    u_tag: str,
+):
+    # 2. IP / DEVICE & RECEIPT FINGERPRINTING
+    lang_code = getattr(message.from_user, "language_code", "") or ""
+    is_prem = bool(getattr(message.from_user, "is_premium", False))
+    pdf_Producer = ""
+    try:
+        m_prod = re.search(rb"/(?:Producer|Creator)\s*\(([^()]{2,60})\)", file_bytes)
+        if m_prod:
+            pdf_Producer = m_prod.group(1).decode("latin1", errors="ignore")
+    except Exception:
+        pass
+    record_user_fingerprint(uid, lang_code=lang_code, is_premium=is_prem, receipt_meta=pdf_Producer)
+    inc_metric("receipts_verified_total", 1)
+
     ver_msg = await message.answer("🔎 <b>Чек тексерілуде...</b>")
 
     seller = get_seller_setting()
@@ -1340,6 +1643,7 @@ async def process_kaspi_receipt_upload(
     )
 
     if ver_res.is_duplicate:
+        flag_suspicious_activity(uid, f"Қайталанған чек жіберді: {ver_res.receipt_number or filename}", severity="high")
         await ver_msg.edit_text(ver_res.reason)
         return
 
@@ -1554,13 +1858,22 @@ async def handle_document_upload(message: Message, bot: Bot):
             return
 
         word_count = len(extracted_text.split())
-        ready_text = (
-            f"✅ <b>Құжат сәтті оқылды!</b> ({word_count} сөз)\n\n"
-            + build_topic_ready_text(session, user_id=uid)
-        )
+        ui_lang = getattr(session, "uiLanguage", "kk")
+        if ui_lang == "ru":
+            ready_text = (
+                f"✅ <b>Документ успешно прочитан!</b> ({word_count} слов)\n"
+                f"📌 Тема: <b>«{doc_title}»</b>\n\n"
+                f"🌐 <b>Шаг 2: На каком языке создать презентацию?</b>"
+            )
+        else:
+            ready_text = (
+                f"✅ <b>Құжат сәтті оқылды!</b> ({word_count} сөз)\n"
+                f"📌 Тақырып: <b>«{doc_title}»</b>\n\n"
+                f"🌐 <b>2-қадам: Презентация қай тілде жасалсын?</b>"
+            )
         await status_msg.edit_text(
             ready_text,
-            reply_markup=dict_to_inline_markup(build_topic_ready_keyboard(session)),
+            reply_markup=dict_to_inline_markup(build_wiz_academic_lang_keyboard(ui_lang)),
         )
     except Exception as e:
         logger.error(f"Document upload error: {e}", exc_info=True)
@@ -1603,6 +1916,8 @@ async def handle_user_text(message: Message, bot: Bot):
 
     session.pendingTopic = clean_topic
     session.pendingDocumentText = None
+    if session.templateId != "storybook":
+        session.isStorybook = False
     save_session(chat_id, session)
     track_funnel_event(uid, "topic_entered", {"source": "text", "topic": clean_topic})
 
@@ -1610,9 +1925,49 @@ async def handle_user_text(message: Message, bot: Bot):
         await execute_generation(bot, chat_id, session, user_id=uid)
         return
 
-    card_text = build_topic_ready_text(session, user_id=uid)
-    card_kb = build_topic_ready_keyboard(session)
-    await message.answer(card_text, reply_markup=dict_to_inline_markup(card_kb))
+    ui_lang = getattr(session, "uiLanguage", "kk")
+    flow_type = getattr(session, "flowType", "academic")
+    if flow_type == "storybook":
+        parts = [p.strip() for p in re.split(r"[-—:|,]", clean_topic, maxsplit=1) if p.strip()]
+        c_name = parts[0] if len(parts) == 2 else clean_topic.split()[0]
+        s_top = parts[1] if len(parts) == 2 else clean_topic
+        session.isStorybook = True
+        session.childName = c_name
+        session.pendingTopic = f"{c_name}: {s_top}"
+        session.templateId = "storybook"
+        session.personaStyle = "kids_fairy"
+        session.withPhotos = True
+        session.imageSource = "gpt-image-2"
+        session.language = "русский" if ui_lang == "ru" else "қазақша"
+        save_session(chat_id, session)
+        step2_txt = (
+            f"🧚 <b>Сказка-презентация</b>\n👶 Герой: <b>{c_name}</b> • 📖 <b>«{s_top}»</b>\n\n📄 <b>Шаг 2: Выберите количество страниц:</b>"
+            if ui_lang == "ru"
+            else f"🧚 <b>Ертегі-презентация</b>\n👶 Кейіпкер: <b>{c_name}</b> • 📖 <b>«{s_top}»</b>\n\n📄 <b>2-қадам: Неше беттік ертегі жасаймыз?</b>"
+        )
+        await message.answer(step2_txt, reply_markup=dict_to_inline_markup(build_wiz_storybook_slides_keyboard(ui_lang)))
+    elif flow_type == "kids_presentation":
+        session.isStorybook = False
+        session.templateId = "kids_edu"
+        session.personaStyle = "kids_fairy"
+        session.withPhotos = True
+        session.imageSource = "gpt-image-2"
+        save_session(chat_id, session)
+        step2_txt = (
+            f"🧸 <b>Детская презентация</b>\n📌 Тема: <b>«{clean_topic}»</b>\n\n🌐 <b>Шаг 2: На каком языке создать презентацию?</b>"
+            if ui_lang == "ru"
+            else f"🧸 <b>Балалар презентациясы</b>\n📌 Тақырып: <b>«{clean_topic}»</b>\n\n🌐 <b>2-қадам: Презентация қай тілде жасалсын?</b>"
+        )
+        await message.answer(step2_txt, reply_markup=dict_to_inline_markup(build_wiz_kids_lang_keyboard(ui_lang)))
+    else:
+        session.isStorybook = False
+        save_session(chat_id, session)
+        step2_txt = (
+            f"🎓 <b>Академическая презентация</b>\n📌 Тема: <b>«{clean_topic}»</b>\n\n🌐 <b>Шаг 2: На каком языке создать презентацию?</b>"
+            if ui_lang == "ru"
+            else f"🎓 <b>Академиялық презентация</b>\n📌 Тақырып: <b>«{clean_topic}»</b>\n\n🌐 <b>2-қадам: Презентация қай тілде жасалсын?</b>"
+        )
+        await message.answer(step2_txt, reply_markup=dict_to_inline_markup(build_wiz_academic_lang_keyboard(ui_lang)))
 
 
 # ----------------- Callback Handlers -----------------
@@ -1634,6 +1989,312 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
     if data == "noop":
         await callback.answer()
         return
+
+    # 0. UI Language Selection (/start -> Қазақша / Русский)
+    if data.startswith("set_ui_lang:"):
+        chosen_ui = data.split(":")[1].lower().strip()
+        session.uiLanguage = "ru" if chosen_ui == "ru" else "kk"
+        session.language = "русский" if session.uiLanguage == "ru" else "қазақша"
+        save_session(chat_id, session)
+        set_user_ui_lang(user_id, session.uiLanguage)
+        await callback.answer("🇷🇺 Язык: Русский" if session.uiLanguage == "ru" else "🇰🇿 Тіл: Қазақша")
+
+        # Send localized persistent bottom reply keyboard
+        kb_Confirm = (
+            "✅ Язык интерфейса установлен: <b>Русский 🇷🇺</b>"
+            if session.uiLanguage == "ru"
+            else "✅ Бот тілі таңдалды: <b>Қазақша 🇰🇿</b>"
+        )
+        await bot.send_message(
+            chat_id=chat_id,
+            text=kb_Confirm,
+            reply_markup=dict_to_reply_markup(get_persistent_reply_keyboard(session.uiLanguage)),
+        )
+        # Immediately show the 3-Direction Selection Menu
+        dir_text, dir_kb = get_direction_menu_message(chat_id)
+        await bot.send_message(chat_id=chat_id, text=dir_text, reply_markup=dict_to_inline_markup(dir_kb))
+        return
+
+    # Restart / New Presentation -> Show 3-Direction Selection Menu
+    if data == "new_presentation":
+        await callback.answer()
+        dir_text, dir_kb = get_direction_menu_message(chat_id)
+        try:
+            await bot.edit_message_text(text=dir_text, chat_id=chat_id, message_id=msg_id, reply_markup=dict_to_inline_markup(dir_kb))
+        except Exception:
+            await bot.send_message(chat_id=chat_id, text=dir_text, reply_markup=dict_to_inline_markup(dir_kb))
+        return
+
+    # Select one of the 3 strictly separated directions (Academic / Kids Presentation / Storybook)
+    if data.startswith("select_track:"):
+        track = data.split(":")[1]
+        ui_lang = getattr(session, "uiLanguage", "kk")
+        is_ru = ui_lang == "ru"
+        await callback.answer()
+
+        if track == "academic":
+            session.flowType = "academic"
+            session.isStorybook = False
+            session.templateId = "standard"
+            if session.personaStyle == "kids_fairy":
+                session.personaStyle = "academic_universal"
+            save_session(chat_id, session)
+            await state.set_state(BotStates.wiz_academic_topic)
+            prompt_txt = (
+                "🎓 <b>Академическая презентация</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "✍️ <b>Шаг 1: Напишите тему (название) презентации</b>\n"
+                "<i>(или отправьте готовый файл .PDF / .DOCX / .TXT):</i>"
+                if is_ru
+                else "🎓 <b>Академиялық презентация</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "✍️ <b>1-қадам: Презентацияның атауын (тақырыбын) жазыңыз</b>\n"
+                "<i>(немесе дайын .PDF / .DOCX / .TXT құжатын жіберіңіз):</i>"
+            )
+            try:
+                await bot.edit_message_text(text=prompt_txt, chat_id=chat_id, message_id=msg_id)
+            except Exception:
+                await bot.send_message(chat_id=chat_id, text=prompt_txt)
+            return
+
+        if track == "kids_presentation":
+            session.flowType = "kids_presentation"
+            session.isStorybook = False
+            session.templateId = "kids_edu"
+            session.personaStyle = "kids_fairy"
+            session.withPhotos = True
+            session.imageSource = "gpt-image-2"
+            save_session(chat_id, session)
+            await state.set_state(BotStates.wiz_kids_pres_topic)
+            prompt_txt = (
+                "🧸 <b>Детская презентация (990 ₸)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "✍️ <b>Шаг 1: Напишите тему детской презентации:</b>\n"
+                "<i>Например: Солнечная система и планеты, Мир динозавров, Правила дорожного движения</i>"
+                if is_ru
+                else "🧸 <b>Балаларға арналған презентация (990 ₸)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "✍️ <b>1-қадам: Балалар презентациясының тақырыбын жазыңыз:</b>\n"
+                "<i>Мысалы: Күн жүйесі және планеталар, Динозаврлар әлемі, Жол ережесі</i>"
+            )
+            try:
+                await bot.edit_message_text(text=prompt_txt, chat_id=chat_id, message_id=msg_id)
+            except Exception:
+                await bot.send_message(chat_id=chat_id, text=prompt_txt)
+            return
+
+        if track == "storybook":
+            session.flowType = "storybook"
+            session.isStorybook = True
+            session.templateId = "storybook"
+            session.personaStyle = "kids_fairy"
+            session.withPhotos = True
+            session.imageSource = "gpt-image-2"
+            save_session(chat_id, session)
+            prompt_txt = (
+                "🧚 <b>Сказка-презентация (Только из фото)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "1️⃣ <b>📸 С фото ребенка (4 990 ₸):</b> Загрузите фото ребенка → GPT-4o Vision создаст постоянный «цифровой аватар» ребенка для всех сцен сказки!\n"
+                "2️⃣ <b>🧚 Без фото ребенка (1 490 ₸):</b> Иллюстрированная сказка по имени ребенка и теме.\n\n"
+                "👇 <b>Выберите формат сказки:</b>"
+                if is_ru
+                else "🧚 <b>Ертегі-презентация (Тек фотодан тұрады)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "1️⃣ <b>📸 Бала фотосымен (4 990 ₸):</b> Баланың фотосын жүктейсіз → GPT-4o Vision баланың бет-әлпетін, шаш түсін, көзін, киімін сипаттап, әр ертегі сахнасына тұрақты «цифрлық аватар» қосады!\n"
+                "2️⃣ <b>🧚 Бала фотосынсыз (1 490 ₸):</b> Баланың аты мен ертегі тақырыбы бойынша иллюстрацияланған ертегі.\n\n"
+                "👇 <b>Ертегі түрін таңдаңыз:</b>"
+            )
+            kb_sm = dict_to_inline_markup(build_wiz_storybook_mode_keyboard(ui_lang))
+            try:
+                await bot.edit_message_text(text=prompt_txt, chat_id=chat_id, message_id=msg_id, reply_markup=kb_sm)
+            except Exception:
+                await bot.send_message(chat_id=chat_id, text=prompt_txt, reply_markup=kb_sm)
+            return
+
+    if data.startswith("wiz_story_mode:"):
+        s_mode = data.split(":")[1]
+        ui_lang = getattr(session, "uiLanguage", "kk")
+        is_ru = ui_lang == "ru"
+        session.flowType = "storybook"
+        session.isStorybook = True
+        session.templateId = "storybook"
+        session.personaStyle = "kids_fairy"
+        session.withPhotos = True
+        session.imageSource = "gpt-image-2"
+        await callback.answer()
+
+        if s_mode == "with_photo":
+            session.storybookWithPhoto = True
+            save_session(chat_id, session)
+            await state.set_state(BotStates.waiting_for_storybook_photo)
+            txt = (
+                "📸 <b>Сказка с фото ребенка (4 990 ₸ • GPT-4o Vision)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "👶 <b>Шаг 1: Отправьте четкую фотографию ребенка в этот чат:</b>\n"
+                "<i>GPT-4o Vision детально опишет черты лица, цвет волос, глаза и одежду ребенка для генерации сцен в DALL·E 3.</i>"
+                if is_ru
+                else "📸 <b>Ертегі-презентация: Бала фотосымен (4 990 ₸ • GPT-4o Vision)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "👶 <b>1-қадам: Баланың анық түскен фотосын осы чатқа жіберіңіз:</b>\n"
+                "<i>GPT-4o Vision баланың бет-әлпетін, шаш түсін, көзін және киімін егжей-тегжейлі сипаттап, DALL·E 3 үшін тұрақты цифрлық аватар дайындайды.</i>"
+            )
+            try:
+                await bot.edit_message_text(text=txt, chat_id=chat_id, message_id=msg_id)
+            except Exception:
+                await bot.send_message(chat_id=chat_id, text=txt)
+            return
+        else:
+            session.storybookWithPhoto = False
+            session.childAvatarDesc = None
+            save_session(chat_id, session)
+            await state.set_state(BotStates.waiting_for_storybook_input)
+            txt = (
+                "🧚 <b>Сказка-презентация без фото (1 490 ₸)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "👶 <b>Шаг 1: Напишите имя ребенка и тему сказки:</b>\n"
+                "<i>Например: <code>Айсултан — Волшебное путешествие в космос</code></i>"
+                if is_ru
+                else "🧚 <b>Ертегі-презентация: Бала фотосынсыз (1 490 ₸)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "👶 <b>1-қадам: Баланың аты мен ертегі тақырыбын жазыңыз:</b>\n"
+                "<i>Мысалы: <code>Айсұлтан — Ғарышқа сиқырлы саяхат</code></i>"
+            )
+            try:
+                await bot.edit_message_text(text=txt, chat_id=chat_id, message_id=msg_id)
+            except Exception:
+                await bot.send_message(chat_id=chat_id, text=txt)
+            return
+
+    # --- TRACK 1 (ACADEMIC) WIZARD STEPS: Lang -> Slides -> Photo Mode -> Generate ---
+    if data.startswith("wiz_acad_lang:"):
+        lang_val = data.split(":")[1]
+        if lang_val in config.SUPPORTED_LANGUAGES:
+            session.language = lang_val
+            save_session(chat_id, session)
+        ui_lang = getattr(session, "uiLanguage", "kk")
+        is_ru = ui_lang == "ru"
+        l_lbl = config.SUPPORTED_LANGUAGES.get(session.language, config.SUPPORTED_LANGUAGES["қазақша"])["label"]
+        await callback.answer(f"🌐 {l_lbl}")
+        txt = (
+            f"🎓 <b>Академическая презентация</b>\n"
+            f"📌 Тема: <b>«{session.pendingTopic}»</b>\n"
+            f"🌐 Язык презентации: <b>{l_lbl}</b>\n\n"
+            f"📄 <b>Шаг 3: Сколько слайдов (страниц) должно быть?</b>"
+            if is_ru
+            else f"🎓 <b>Академиялық презентация</b>\n"
+            f"📌 Тақырып: <b>«{session.pendingTopic}»</b>\n"
+            f"🌐 Презентация тілі: <b>{l_lbl}</b>\n\n"
+            f"📄 <b>3-қадам: Неше беттік презентация жасаймыз?</b>"
+        )
+        await bot.edit_message_text(
+            text=txt, chat_id=chat_id, message_id=msg_id,
+            reply_markup=dict_to_inline_markup(build_wiz_academic_slides_keyboard(ui_lang)),
+        )
+        return
+
+    if data.startswith("wiz_acad_slides:"):
+        n = int(data.split(":")[1])
+        session.slideCount = n
+        save_session(chat_id, session)
+        ui_lang = getattr(session, "uiLanguage", "kk")
+        is_ru = ui_lang == "ru"
+        l_lbl = config.SUPPORTED_LANGUAGES.get(session.language, config.SUPPORTED_LANGUAGES["қазақша"])["label"]
+        await callback.answer(f"📄 {n}")
+        txt = (
+            f"🎓 <b>Академическая презентация</b>\n"
+            f"📌 Тема: <b>«{session.pendingTopic}»</b>\n"
+            f"🌐 Язык: <b>{l_lbl}</b> • 📄 Объем: <b>{n} слайдов</b>\n\n"
+            f"🖼 <b>Шаг 4: Выберите формат (с фото или без фото) для запуска генерации:</b>"
+            if is_ru
+            else f"🎓 <b>Академиялық презентация</b>\n"
+            f"📌 Тақырып: <b>«{session.pendingTopic}»</b>\n"
+            f"🌐 Тіл: <b>{l_lbl}</b> • 📄 Көлемі: <b>{n} бет</b>\n\n"
+            f"🖼 <b>4-қадам: Фотомен бе, әлде фотосыз ба? (Бассаңыз, бірден генерация басталады):</b>"
+        )
+        await bot.edit_message_text(
+            text=txt, chat_id=chat_id, message_id=msg_id,
+            reply_markup=dict_to_inline_markup(build_wiz_academic_photo_keyboard(ui_lang)),
+        )
+        return
+
+    if data.startswith("wiz_acad_gen:"):
+        p_mode = data.split(":")[1]
+        session.isStorybook = False
+        if p_mode == "none":
+            session.withPhotos = False
+        elif p_mode == "ddg":
+            session.withPhotos = True
+            session.imageSource = "ddg"
+        else:
+            session.withPhotos = True
+            session.imageSource = "gpt-image-2"
+        save_session(chat_id, session)
+        await callback.answer("🚀 Генерация басталды!")
+        await execute_generation(
+            bot, chat_id, session, user_id=user_id, slide_count=session.slideCount,
+            existing_msg_id=msg_id if not is_doc else None,
+        )
+        return
+
+    # --- TRACK 2 (KIDS PRESENTATION) WIZARD STEPS: Lang -> Slides -> Generate ---
+    if data.startswith("wiz_kids_lang:"):
+        lang_val = data.split(":")[1]
+        if lang_val in config.SUPPORTED_LANGUAGES:
+            session.language = lang_val
+            save_session(chat_id, session)
+        ui_lang = getattr(session, "uiLanguage", "kk")
+        is_ru = ui_lang == "ru"
+        l_lbl = config.SUPPORTED_LANGUAGES.get(session.language, config.SUPPORTED_LANGUAGES["қазақша"])["label"]
+        await callback.answer(f"🌐 {l_lbl}")
+        txt = (
+            f"🧸 <b>Детская презентация</b>\n"
+            f"📌 Тема: <b>«{session.pendingTopic}»</b>\n"
+            f"🌐 Язык: <b>{l_lbl}</b>\n\n"
+            f"📄 <b>Шаг 3: Выберите количество слайдов</b> (после нажатия сразу начнется генерация):"
+            if is_ru
+            else f"🧸 <b>Балалар презентациясы</b>\n"
+            f"📌 Тақырып: <b>«{session.pendingTopic}»</b>\n"
+            f"🌐 Тіл: <b>{l_lbl}</b>\n\n"
+            f"📄 <b>3-қадам: Неше беттік презентация жасаймыз?</b> (Бет санын бассаңыз, бірден генерация басталады):"
+        )
+        await bot.edit_message_text(
+            text=txt, chat_id=chat_id, message_id=msg_id,
+            reply_markup=dict_to_inline_markup(build_wiz_kids_slides_keyboard(ui_lang)),
+        )
+        return
+
+    if data.startswith("wiz_kids_gen:"):
+        n = int(data.split(":")[1])
+        session.slideCount = n
+        session.isStorybook = False
+        session.templateId = "kids_edu"
+        session.personaStyle = "kids_fairy"
+        session.withPhotos = True
+        save_session(chat_id, session)
+        await callback.answer("🧸 Балалар презентациясы дайындалуда...")
+        await execute_generation(
+            bot, chat_id, session, user_id=user_id, slide_count=n,
+            existing_msg_id=msg_id if not is_doc else None,
+        )
+        return
+
+    # --- TRACK 3 (STORYBOOK) WIZARD STEP 2: Slides -> Generate ---
+    if data.startswith("wiz_story_gen:"):
+        n = int(data.split(":")[1])
+        session.slideCount = n
+        session.isStorybook = True
+        session.templateId = "storybook"
+        session.personaStyle = "kids_fairy"
+        session.withPhotos = True
+        session.imageSource = "gpt-image-2"
+        save_session(chat_id, session)
+        await callback.answer("🧚 Ертегі-презентация дайындалуда...")
+        await execute_generation(
+            bot, chat_id, session, user_id=user_id, slide_count=n,
+            existing_msg_id=msg_id if not is_doc else None,
+        )
+        return
+
 
     # Toggle Photo Mode (none / ddg / gpt-image-2)
     if data.startswith("set_photo:"):
@@ -1692,6 +2353,226 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
                 )
             except Exception:
                 pass
+        return
+
+    # Open Persona Style Selector
+    if data.startswith("open_persona"):
+        parts = data.split(":")
+        mode = parts[1] if len(parts) > 1 else "default"
+        await callback.answer()
+        text, kb = get_persona_styles_message(chat_id, mode=mode)
+        try:
+            await bot.edit_message_text(text=text, chat_id=chat_id, message_id=msg_id, reply_markup=dict_to_inline_markup(kb))
+        except Exception:
+            await bot.send_message(chat_id=chat_id, text=text, reply_markup=dict_to_inline_markup(kb))
+        return
+
+    if data.startswith("pick_persona:"):
+        parts = data.split(":")
+        p_id = parts[1]
+        mode = parts[2] if len(parts) > 2 else "default"
+        if p_id in config.PERSONA_STYLES:
+            session.personaStyle = p_id
+            if p_id == "kids_fairy":
+                session.withPhotos = True
+            save_session(chat_id, session)
+            set_user_persona_style(user_id, p_id)
+            p_title = config.PERSONA_STYLES[p_id]["title"]
+            await callback.answer(f"✅ Стиль таңдалды: {p_title}")
+            if mode == "topic" and session.pendingTopic:
+                text = build_topic_ready_text(session, user_id=user_id)
+                kb = build_topic_ready_keyboard(session)
+                await bot.edit_message_text(text=text, chat_id=chat_id, message_id=msg_id, reply_markup=dict_to_inline_markup(kb))
+            else:
+                await bot.edit_message_text(
+                    text=f"✅ Сіздің мамандық/курс стиліңіз сақталды: <b>{p_title}</b>\n\nЕнді презентация тақырыбын жазыңыз!",
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                )
+        return
+
+    if data == "start_storybook":
+        await callback.answer()
+        await state.set_state(BotStates.waiting_for_storybook_input)
+        await callback.message.answer(
+            "🧚 <b>Балаларға арналған Ертегі-презентация (Тек фотодан • 2 990 ₸)</b>\n\n"
+            "👶 <b>Баланың аты мен ертегі тақырыбын жазыңыз:</b>\n"
+            "Мысалы: <code>Айсұлтан — Ғарышқа сиқырлы саяхат</code>\n\n"
+            "Бас тарту үшін: /cancel"
+        )
+        return
+
+    # Admin Cohort Analysis & AI Churn / 30d Win-Back
+    if data == "admin_cohorts_churn":
+        if not is_admin(user_id):
+            await callback.answer("Рұқсат жоқ", show_alert=True)
+            return
+        await callback.answer()
+        c_stats = get_cohort_analysis_stats()
+        lines = [
+            "📊 <b>COHORT ТАЛДАУЫ ЖӘНЕ AI CHURN / WIN-BACK</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"👥 Барлық қолданушылар: <b>{c_stats['total_users']}</b>\n"
+            f"🤖 <b>AI Churn болжамы (7+ күн кірмеген / ≤3 кредит):</b> <b>{c_stats['churn_risk_7d_count']} адам</b> (автоматты <code>COMEBACK50</code> -50% промокоды беріледі)\n"
+            f"💝 <b>30+ күн белсенді емес (Win-back):</b> <b>{c_stats['inactive_30d_count']} адам</b> («Сізді сағындық! 3 тегін презентация сыйлыққа»)\n\n"
+            "📅 <b>Апталық когорталар (Retention & Төлем):</b>"
+        ]
+        for c_key, c_val in sorted(c_stats["cohorts"].items(), reverse=True)[:8]:
+            tot = max(1, c_val["total"])
+            ret_pct = int(c_val["retained_7d"] * 100 / tot)
+            paid_pct = int(c_val["paid"] * 100 / tot)
+            lines.append(
+                f"  • <code>{c_key}</code>: <b>{c_val['total']} адам</b> | Белсенді: <b>{ret_pct}%</b> | Төлеген: <b>{c_val['paid']} ({paid_pct}%)</b>"
+            )
+        kb = {
+            "inline_keyboard": [
+                [{"text": "🚀 AI Churn (-50%) & 30-күн Win-back (+3 през) іске қосу", "callback_data": "adm_run_churn_winback"}],
+                [{"text": "⬅️ Админ панельге оралу", "callback_data": "admin_refresh"}],
+            ]
+        }
+        try:
+            await callback.message.edit_text("\n".join(lines), reply_markup=dict_to_inline_markup(kb))
+        except Exception:
+            await callback.message.answer("\n".join(lines), reply_markup=dict_to_inline_markup(kb))
+        return
+
+    if data == "adm_run_churn_winback":
+        if not is_admin(user_id):
+            await callback.answer("Рұқсат жоқ", show_alert=True)
+            return
+        res = run_ai_churn_and_winback_campaign()
+        wb_list = res["winback_30d_awarded"]
+        ch_list = res["churn_7d_promos"]
+        sent_wb, sent_ch = 0, 0
+        for item in wb_list:
+            try:
+                await bot.send_message(chat_id=item["user_id"], text=item["message"])
+                sent_wb += 1
+            except Exception:
+                pass
+        for item in ch_list:
+            try:
+                await bot.send_message(chat_id=item["user_id"], text=item["message"])
+                sent_ch += 1
+            except Exception:
+                pass
+        await callback.answer(f"✅ Win-back (+3 през): {len(wb_list)} адам | Churn промокод: {len(ch_list)} адам!", show_alert=True)
+        await callback.message.answer(
+            f"✅ <b>AI Retention & Win-back науқаны орындалды!</b>\n"
+            f"• 💝 30 күн кірмегендерге (+3 тегін през): <b>{len(wb_list)} адам</b> (хат жетті: {sent_wb})\n"
+            f"• 🤖 7 күн Churn тәуекеліндегілерге (<code>COMEBACK50</code> -50%): <b>{len(ch_list)} адам</b> (хат жетті: {sent_ch})"
+        )
+        return
+
+    # Admin Anti-Fraud & Fingerprinting Flags
+    if data == "admin_antifraud":
+        if not is_admin(user_id):
+            await callback.answer("Рұқсат жоқ", show_alert=True)
+            return
+        await callback.answer()
+        flagged = get_flagged_users(15)
+        lines = [
+            "🛡 <b>АНТИ-ФРОД ЖӘНЕ FINGERPRINT БАҚЫЛАУЫ</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "• Бір уақытта бірнеше чек жіберу автоматты түрде блокталады.\n"
+            "• Қайталанған чектер мен бірдей құрылғы/метадеректер (Fingerprint) автоматты түрде flag етіледі.\n"
+        ]
+        rows = []
+        if not flagged:
+            lines.append("✅ Қазіргі сәтте күдікті (flag етілген) қолданушылар жоқ.")
+        else:
+            lines.append(f"⚠️ <b>Күдікті белсенділік тіркелгендер ({len(flagged)}):</b>")
+            for u in flagged:
+                uid_f = u["user_id"]
+                uname = f"@{u['username']}" if u.get("username") else (u.get("first_name") or str(uid_f))
+                lines.append(
+                    f"• <b>{uname}</b> (<code>{uid_f}</code>) — Балл: <b>{u['fraud_score']}</b> ({u['flags_count']} flag)\n"
+                    f"  Себебі: <i>{u.get('last_reason') or '—'}</i>"
+                )
+                rows.append([
+                    {"text": f"👤 Профиль ({uid_f})", "callback_data": f"adm_view_user:{uid_f}"},
+                    {"text": f"✅ Flag тазалау ({uid_f})", "callback_data": f"adm_unflag_user:{uid_f}"},
+                ])
+        rows.append([{"text": "⬅️ Админ панельге оралу", "callback_data": "admin_refresh"}])
+        try:
+            await callback.message.edit_text("\n".join(lines), reply_markup=dict_to_inline_markup({"inline_keyboard": rows}))
+        except Exception:
+            await callback.message.answer("\n".join(lines), reply_markup=dict_to_inline_markup({"inline_keyboard": rows}))
+        return
+
+    if data.startswith("adm_unflag_user:"):
+        if not is_admin(user_id):
+            await callback.answer("Рұқсат жоқ", show_alert=True)
+            return
+        target_uid = int(data.split(":")[1])
+        clear_user_fraud_flags(target_uid)
+        await callback.answer("✅ Flag тазаланды!")
+        return
+
+    # Admin Referat Bot Cross-Sell URL Settings
+    if data == "admin_referat_url":
+        if not is_admin(user_id):
+            await callback.answer("Рұқсат жоқ", show_alert=True)
+            return
+        await callback.answer()
+        cur_url = get_referat_bot_url()
+        text = (
+            "📝 <b>РЕФЕРАТ БОТ СІЛТЕМЕСІН БАПТАУ (CROSS-SELL)</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Әр презентация дайын болғанда астында шығатын\n"
+            "<b>«📝 Осы тақырыпқа реферат керек пе? -20% жеңілдік»</b>\n"
+            "батырмасының сілтемесі:\n\n"
+            f"🔗 Қазіргі сілтеме: <code>{cur_url}</code>"
+        )
+        kb = {
+            "inline_keyboard": [
+                [{"text": "✏️ Реферат бот сілтемесін өзгерту", "callback_data": "adm_change_referat_url"}],
+                [{"text": "⬅️ Админ панельге оралу", "callback_data": "admin_refresh"}],
+            ]
+        }
+        try:
+            await callback.message.edit_text(text, reply_markup=dict_to_inline_markup(kb))
+        except Exception:
+            await callback.message.answer(text, reply_markup=dict_to_inline_markup(kb))
+        return
+
+    if data == "adm_change_referat_url":
+        if not is_admin(user_id):
+            await callback.answer("Рұқсат жоқ", show_alert=True)
+            return
+        await state.set_state(BotStates.waiting_for_referat_bot_url)
+        await callback.message.answer(
+            "🔗 <b>Екінші боттың (Реферат бот) сілтемесін жіберіңіз:</b>\n"
+            "Мысалы: <code>https://t.me/my_referat_bot?start=sale20</code>\n\n"
+            "Бас тарту үшін: /cancel"
+        )
+        await callback.answer()
+        return
+
+    # Admin Prometheus + Grafana Metrics View
+    if data == "admin_prometheus":
+        if not is_admin(user_id):
+            await callback.answer("Рұқсат жоқ", show_alert=True)
+            return
+        await callback.answer()
+        snap = get_prometheus_metrics_snapshot()
+        text = (
+            "⚡ <b>PROMETHEUS + GRAFANA ЖӘНЕ SENTRY МОНИТОРИНГІ</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏱ Uptime: <b>{snap['uptime_sec']} сек</b> | Белсенді генерация: <b>{snap['active_generations']}</b>\n"
+            f"🚀 Барлық генерация: <b>{snap['generations_total']}</b>\n"
+            f"⚡ Презентация кэш Hit: <b>{snap['cache_hits_total']} ({snap['cache_hit_rate_pct']}%)</b>\n"
+            f"🖼 Сурет кэш Hit (Redis/DB): <b>{snap['image_cache_hits_total']}</b>\n"
+            f"⏱ Latency (Орташа / p95 / Max): <b>{snap['latency_avg_sec']}s / {snap['latency_p95_sec']}s / {snap['latency_max_sec']}s</b>\n"
+            f"🧾 Тексерілген чектер: <b>{snap['receipts_verified_total']}</b> (Блокталған параллель чектер: <b>{snap['receipts_blocked_concurrent']}</b>)\n"
+            f"🛡 Анти-фрод Flag-тар: <b>{snap['fraud_flags_total']}</b> | ❌ Қателер (Telegram Alert): <b>{snap['errors_total']}</b>\n"
+            f"📡 Sentry SDK: <b>{'🟢 Қосулы' if snap['sentry_enabled'] else '⚪️ SENTRY_DSN орнатылмаған (Telegram Alert белсенді)'}</b>"
+        )
+        kb = {"inline_keyboard": [[{"text": "⬅️ Админ панельге оралу", "callback_data": "admin_refresh"}]]}
+        try:
+            await callback.message.edit_text(text, reply_markup=dict_to_inline_markup(kb))
+        except Exception:
+            await callback.message.answer(text, reply_markup=dict_to_inline_markup(kb))
         return
 
     # Open Template Library

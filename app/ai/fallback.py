@@ -2,8 +2,8 @@
 Intelligent Multi-Language (Қазақша / Русский / English) & Template-Aware Fallback Presentation Generator.
 Supports:
 - 3 Languages: 'қазақша', 'русский', 'english'
-- Template Library: 'diploma', 'business', 'scientific', 'lesson', 'standard'
-- Photo-Enabled layouts ('photo_hero', 'photo_split', 'photo_magazine' + image_query)
+- Template Library: 'diploma', 'business', 'scientific', 'lesson', 'medical', 'law', 'marketing', 'ecology', 'standard'
+- Rich, detailed multi-sentence paragraphs and 4 comprehensive bullet points per slide (especially for no-photo mode)
 - Document-to-Slide chunking when document_text is provided
 """
 import re
@@ -32,32 +32,44 @@ def _generate_from_document_text(
     language: str = "қазақша",
     template_id: str = "standard",
     with_photos: bool = False,
+    persona_style: str = "academic_universal",
+    is_storybook: bool = False,
+    child_name: Optional[str] = None,
+    child_avatar_desc: Optional[str] = None,
 ) -> PresentationData:
     """
-    Splits an uploaded document's text into structured slides when LLM APIs are offline.
+    Splits an uploaded document's text into structured, information-rich slides when LLM APIs are offline.
     """
     paragraphs = [
         p.strip()
         for p in re.split(r"\n+", document_text)
-        if len(p.strip()) > 25
+        if len(p.strip()) > 30
     ]
     if not paragraphs:
         sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", document_text) if len(s.strip()) > 15]
-        paragraphs = sentences or [document_text[:400]]
+        paragraphs = sentences or [document_text[:650]]
 
     slides: List[SlideContent] = []
+    max_para_chars = 360 if with_photos else 580
+    max_bullet_chars = 150 if with_photos else 230
 
-    intro_text = paragraphs[0][:280] if paragraphs else f"«{topic}» құжаты бойынша негізгі материалдар мен талдау."
-    cover_pts = [p[:110] for p in paragraphs[1:4]]
+    intro_text = (
+        " ".join(paragraphs[:2])[:max_para_chars]
+        if paragraphs
+        else f"«{topic}» тақырыбы бойынша негізгі теориялық қағидаттар, аналитикалық деректер мен практикалық тұжырымдар жүйеленіп ұсынылған."
+    )
+    cover_pts = [p[:max_bullet_chars] for p in paragraphs[1:5]]
     while len(cover_pts) < 3:
-        cover_pts.append("Құжаттағы негізгі деректер мен тәжірибелік тұжырымдар жүйеленді.")
+        cover_pts.append(
+            "Құжаттағы іргелі теориялық негіздер, статистикалық көрсеткіштер мен тәжірибелік тұжырымдар толықтай құрылымдалды."
+        )
 
     slides.append(
         SlideContent(
             slide_number=1,
             type="cover",
             title=topic,
-            subtitle="Құжат мазмұны бойынша құрылымдалған аналитикалық презентация",
+            subtitle="Құжат мазмұны бойынша тереңдетілген аналитикалық презентация",
             content=intro_text,
             key_points=cover_pts[:3],
             image_query=f"{topic} cover concept" if with_photos else None,
@@ -70,23 +82,25 @@ def _generate_from_document_text(
     for i in range(inner_count):
         s_num = i + 2
         idx_start = int((i / inner_count) * len(body_paras))
-        chunk = body_paras[idx_start : idx_start + 4] or body_paras[:2]
-        main_para = chunk[0][:320] if chunk else intro_text
+        chunk = body_paras[idx_start : idx_start + 5] or body_paras[:3]
+        main_para = " ".join(chunk[:2])[:max_para_chars] if chunk else intro_text
 
         sents: List[str] = []
         for c in chunk[1:]:
             for s in re.split(r"(?<=[.!?])\s+", c):
-                if 15 < len(s.strip()) <= 140:
+                if 20 < len(s.strip()) <= max_bullet_chars:
                     sents.append(s.strip())
-        if len(sents) < 3:
+        if len(sents) < 4:
             for s in re.split(r"(?<=[.!?])\s+", main_para):
-                if 15 < len(s.strip()) <= 140 and s.strip() not in sents:
+                if 20 < len(s.strip()) <= max_bullet_chars and s.strip() not in sents:
                     sents.append(s.strip())
-        while len(sents) < 3:
-            sents.append("Құжатта көрсетілген негізгі деректер мен маңызды көрсеткіштер.")
+        while len(sents) < 4:
+            sents.append(
+                "Бұл бөлімде негізгі себеп-салдарлық байланыстар, қолданбалы тетіктер мен нақты көрсеткіштер жан-жақты талданады."
+            )
 
-        first_line = chunk[0].split(".")[0].strip()[:65]
-        slide_title = first_line if 5 <= len(first_line) <= 62 else f"{topic}: {i + 1}-бөлім"
+        first_line = chunk[0].split(".")[0].strip()[:68]
+        slide_title = first_line if 6 <= len(first_line) <= 65 else f"{topic}: {i + 1}-аналитикалық бөлім"
         l_type = ("photo_split" if i % 2 == 0 else "photo_magazine") if with_photos else "split_screen"
 
         slides.append(
@@ -94,18 +108,20 @@ def _generate_from_document_text(
                 slide_number=s_num,
                 type=l_type,
                 title=slide_title,
+                subtitle="Құрылымдық талдау, негізгі деректер және практикалық маңызы",
                 content=main_para,
                 key_points=sents[:4],
                 image_query=f"{topic} {slide_title}" if with_photos else None,
             )
         )
 
-    last_para = paragraphs[-1][:280] if paragraphs else intro_text
+    last_para = " ".join(paragraphs[-2:])[:max_para_chars] if paragraphs else intro_text
     slides.append(
         SlideContent(
             slide_number=len(slides) + 1,
             type="conclusion",
-            title="Қорытынды тұжырымдар",
+            title="Қорытынды тұжырымдар мен тәжірибелік ұсынымдар",
+            subtitle="Зерттеу нәтижелерінің жиынтық қорытындысы",
             content=last_para,
             key_points=cover_pts[:3],
             image_query=f"{topic} summary" if with_photos else None,
@@ -119,6 +135,9 @@ def _generate_from_document_text(
         design_id=theme_id,
         language=language,
         template_id=template_id,
+        persona_style=persona_style,
+        is_storybook=is_storybook,
+        child_name=child_name,
         with_photos=with_photos,
         slide_count=len(slides),
         slides=slides,
@@ -136,16 +155,90 @@ def generate_intelligent_fallback(
     language: str = "қазақша",
     template_id: str = "standard",
     with_photos: bool = False,
+    persona_style: str = "academic_universal",
+    is_storybook: bool = False,
+    child_name: Optional[str] = None,
+    child_avatar_desc: Optional[str] = None,
 ) -> PresentationData:
     """
-    Generates rich, fully structured presentation data in Kazakh, Russian, or English,
-    honoring template_id structure and photo layouts.
+    Generates rich, deeply informative presentation data in Kazakh, Russian, or English,
+    honoring template_id structure and photo/no-photo layouts.
     """
     chosen_theme = (
         THEMES_REGISTRY[theme_id]
         if theme_id and theme_id in THEMES_REGISTRY
         else detect_best_theme_for_topic(topic, with_photos=with_photos)
     )
+
+    lang = language.lower().strip()
+    if is_storybook or template_id == "storybook":
+        hero = (child_name or topic.split()[0] or "Айсұлтан").strip()
+        clean_story_topic = topic.replace(f"{hero}:", "").strip() or topic
+        avatar_prefix = (
+            child_avatar_desc.strip()
+            if child_avatar_desc and child_avatar_desc.strip()
+            else f"7-year-old Kazakh child named {hero}, round face, short dark hair, expressive brown eyes, warm smile"
+        )
+        story_slides: List[SlideContent] = []
+        if lang == "русский":
+            chapters = [
+                (f"Волшебное начало: {hero} и «{clean_story_topic}»", f"Давным-давно в уютном и солнечном городе жил добрый и любознательный ребенок по имени {hero}. Однажды вечером перед {hero} открылась сияющая золотая книга, ведущая в мир «{clean_story_topic}».", "opening a glowing golden magical book in a cozy bedroom with sparkles"),
+                (f"Шаг в сказочный мир", f"Сделав смелый шаг вперед, {hero} оказался на цветущей поляне, где деревья шептали древние тайны, а в небе летали светящиеся бабочки, указывая путь к чудесам.", "stepping into an enchanted glowing meadow with magical butterflies"),
+                (f"Встреча с мудрым проводником", f"Навстречу {hero} вылетела золотая птица Самрук и подарила волшебный компас, который светится ярче, когда сердце наполнено добротой и смелостью.", "holding a glowing golden compass next to a friendly golden phoenix bird"),
+                (f"Тайна хрустального моста", f"Впереди раскинулась быстрая звездная река. {hero} улыбнулся, вспомнил добрые слова и смело ступил на хрустальный мост, который засиял всеми цветами радуги.", "crossing a sparkling crystal rainbow bridge over a starry river"),
+                (f"Верные сказочные друзья", f"В волшебном лесу {hero} познакомился с веселыми лесными жителями. Вместе они решили разгадать главную загадку страны «{clean_story_topic}».", "laughing with cute woodland animal friends in a sunlit magical forest"),
+                (f"Загадка древней башни", f"У ворот серебряной башни стоял каменный страж и задал непростую загадку. {hero} проявил смекалку и дал верный ответ, после чего ворота мягко распахнулись.", "solving a glowing puzzle at the gates of a silver fairy-tale tower"),
+                (f"Свет доброго сердца", f"Когда на долину опустился густой туман, {hero} поднял волшебный фонарь доброты. Его теплый свет мгновенно рассеял темноту и согрел всех вокруг.", "holding a warm glowing lantern that lights up a misty magical valley"),
+                (f"Праздник в сказочном королевстве", f"Все жители волшебной страны радостно встретили {hero}! В честь юного героя устроили большой праздник с музыкой, звездами и сладкими угощениями.", "celebrating at a grand fairy-tale festival with lanterns and confetti"),
+                (f"Счастливое возвращение {hero}", f"Поблагодарив новых друзей, {hero} вернулся домой с радостной улыбкой. Теперь {hero} точно знает: доброта, дружба и смелость творят настоящие чудеса!", "smiling happily back home holding a glowing star souvenir"),
+            ]
+        else:
+            chapters = [
+                (f"Ертегінің басталуы: {hero} және «{clean_story_topic}»", f"Ерте-ерте ертеде, күлімдеген шуақты қалада мейірімді әрі білімге құштар {hero} есімді бала өмір сүріпті. Бір күні {hero} «{clean_story_topic}» атты ғажайып әлемге апаратын алтын кілт тауып алды.", "holding a glowing golden key in front of a magical shimmering portal"),
+                (f"Сиқырлы әлемге алғашқы қадам", f"{hero} алтын есікті ашқан сәтте, айналасы түрлі-түсті гүлдерге, жарқыраған жұлдыздарға және ән салған сиқырлы құстарға толы таңғажайып өлкеге тап болды.", "walking into a vibrant enchanted wonderland with glowing flowers and birds"),
+                (f"Алтын Самұрықпен кездесу", f"Сол кезде аспаннан қанаттары күндей жарқыраған мейірімді Алтын Самұрық түсіп, {hero}-ға жол көрсететін сиқырлы жұлдызды сыйға тартты.", "meeting a friendly glowing golden Samruk bird under a starry sky"),
+                (f"Кемпірқосақ көпірінен өту", f"Алда мөлдір бұлақ пен биік шыңдар тұрды. {hero} еш қорықпастан кемпірқосақ көпіріне қадам басты, ал көпір батыл баланың астында жарқырап жол ашты.", "walking across a glowing rainbow bridge above crystal waterfalls"),
+                (f"Адал достардың көмегі", f"Саяхат барысында {hero} ормандағы сүйкімді әрі тапқыр достармен танысты. Олар бірігіп «{clean_story_topic}» елінің ең үлкен құпиясын ашуға аттанды.", "smiling with cute magical forest friends on an adventure trail"),
+                (f"Дана қамалдың жұмбағы", f"Күміс қамалдың алдында сиқырлы жұмбақ жазылған екен. {hero} өзінің зеректігі мен ақылдылығының арқасында жұмбақтың шешімін бірден тапты!", "unlocking a sparkling silver castle gate with wisdom and joy"),
+                (f"Мейірімді жүректің шуағы", f"Сиқырлы баққа көлеңке түскенде, {hero} қолындағы жұлдызды жоғары көтерді. Оның мейірімді жүрегінен тараған жылу бүкіл бақты қайтадан гүлдендірді.", "holding a shining star that blooms magical flowers all around"),
+                (f"Ғажайып жеңіс мерекесі", f"Барлық ертегі кейіпкерлері {hero}-ның батылдығы мен мейірімділігіне тәнті болып, үлкен мереке ұйымдастырды. Аспанда алтын отшашулар жарқырады!", "celebrating with fairy-tale friends under golden fireworks"),
+                (f"Бақытты оралу: Жарайсың, {hero}!", f"Осылайша {hero} сиқырлы саяхатын сәтті аяқтап, үйіне зор қуанышпен оралды. {hero} нағыз батырлық пен мейірімділік әрқашан жеңіске жетелейтінін түсінді!", "waving happily at sunset with a warm heroic smile"),
+            ]
+        for idx_c in range(slide_count):
+            if idx_c == slide_count - 1 and slide_count >= 3:
+                c_title, c_text, c_scene = chapters[-1]
+            else:
+                c_title, c_text, c_scene = chapters[idx_c % (len(chapters) - 1)]
+            story_slides.append(
+                SlideContent(
+                    slide_number=idx_c + 1,
+                    type="storybook_full_photo",
+                    title=c_title,
+                    subtitle="",
+                    content=c_text,
+                    key_points=[],
+                    image_query=f"{avatar_prefix}, {c_scene}",
+                )
+            )
+        return PresentationData(
+            id=f"story_{int(time.time())}_{random.randint(1000, 9999)}",
+            topic=topic,
+            title_presentation=f"Ертегі: {hero} және {topic}",
+            design_id=chosen_theme.id,
+            language=language,
+            template_id="storybook",
+            persona_style="kids_fairy",
+            is_storybook=True,
+            child_name=hero,
+            child_avatar_desc=avatar_prefix,
+            with_photos=True,
+            image_source="gpt-image-2",
+            slide_count=len(story_slides),
+            slides=story_slides,
+            plan_summary=[f"{s.slide_number}-слайд: {s.title}" for s in story_slides],
+            quality_score=QualityScore(),
+            createdAt=str(time.time()),
+        )
 
     if document_text and len(document_text.strip()) > 40:
         return _generate_from_document_text(
@@ -169,46 +262,47 @@ def generate_intelligent_fallback(
 
     slides: List[SlideContent] = []
 
-    # Language-specific localized templates
     if lang == "русский":
-        cover_title = f"{topic}: Комплексный научно-практический анализ"
-        cover_sub = f"Структурированная аналитическая презентация ({tmpl['title']})"
+        cover_title = f"{topic}: Комплексный научно-практический и аналитический обзор"
+        cover_sub = f"Фундаментальные основы, ключевые показатели и перспективы развития ({tmpl['title']})"
         cover_content = (
-            f"В данной презентации подробно рассматриваются теоретические основы, ключевые этапы развития "
-            f"и практическое применение темы «{topic}». Каждый слайд содержит систематизированные факты, "
-            f"показатели эффективности и аргументированные выводы для уверенной защиты проекта."
+            f"Данное исследование представляет собой глубокий системный анализ темы «{topic}», охватывающий "
+            f"теоретико-методологическую базу, историческую эволюцию, современные количественные индикаторы и "
+            f"прикладные механизмы реализации. Особое внимание уделяется причинно-следственным связям, "
+            f"институциональным факторам эффективности и разработке научно обоснованных практических рекомендаций."
         )
         cover_pts = [
-            "Фундаментальные теоретические основы и актуальность темы",
-            "Ключевые статистические показатели и этапы развития",
-            "Практические рекомендации и итоговые выводы исследования",
+            "Систематизация теоретико-методологических подходов и определение ключевого понятийного аппарата исследования.",
+            "Анализ актуальных статистических показателей, динамики развития и международного опыта внедрения.",
+            "Формулирование прикладных решений, оценка социально-экономического эффекта и перспектив масштабирования.",
         ]
     elif lang == "english":
-        cover_title = f"{topic}: Comprehensive Analytical & Strategic Overview"
-        cover_sub = f"Structured Executive & Academic Presentation ({tmpl['title']})"
+        cover_title = f"{topic}: Comprehensive Analytical & Strategic Research"
+        cover_sub = f"Foundational Theory, Empirical Metrics & Implementation Roadmap ({tmpl['title']})"
         cover_content = (
-            f"This presentation delivers an in-depth examination of '{topic}', covering foundational theory, "
-            f"historical evolution, quantitative metrics, and real-world strategic applications. Every slide is "
-            f"structured with concrete evidence and actionable insights for a compelling presentation."
+            f"This research delivers a rigorous, multidimensional examination of '{topic}', synthesizing foundational "
+            f"theoretical frameworks, historical milestones, quantitative market benchmarks, and real-world operational "
+            f"strategies. By evaluating structural drivers and causal mechanisms, the study establishes actionable "
+            f"recommendations for sustainable institutional and technological advancement."
         )
         cover_pts = [
-            "Core theoretical foundations and contemporary relevance",
-            "Quantitative benchmarks, key metrics, and developmental stages",
-            "Practical implementation roadmap and strategic conclusions",
+            "Comprehensive synthesis of foundational theories, core paradigms, and methodological frameworks.",
+            "Quantitative evaluation of growth dynamics, empirical performance metrics, and global benchmarks.",
+            "Actionable implementation roadmap, risk mitigation strategies, and long-term impact projections.",
         ]
     else:
-        cover_title = f"{topic}: Кешенді ғылыми-тәжірибелік талдау"
-        cover_sub = f"Толық құрылымдалған аналитикалық материалдар ({tmpl['title']})"
+        cover_title = f"{topic}: Кешенді ғылыми-тәжірибелік және аналитикалық талдау"
+        cover_sub = f"Теориялық-әдіснамалық негіздері, даму динамикасы және қолданбалы маңызы ({tmpl['title']})"
         cover_content = (
-            f"Бұл презентацияда «{topic}» тақырыбының теориялық негіздері, тарихи даму эволюциясы, "
-            f"қазіргі қолданыс аясы және практикалық маңызы жан-жақты талданады. Әрбір слайдта тақырыпты "
-            f"еркін әрі сенімді қорғауға қажетті толық деректер, себеп-салдарлық байланыстар мен нақты "
-            f"тұжырымдар жүйеленіп берілген."
+            f"Бұл ғылыми-аналитикалық жұмыста «{topic}» тақырыбының іргелі теориялық негіздері, тарихи қалыптасу "
+            f"кезеңдері, қазіргі сандық-статистикалық көрсеткіштері мен практикалық қолданылу тетіктері жан-жақты "
+            f"зерделенеді. Зерттеу барысында саланың өзекті мәселелері, ішкі және сыртқы даму факторлары, сондай-ақ "
+            f"тиімділікті арттырудың нақты ғылыми-тәжірибелік жолдары жүйелі түрде негізделген."
         )
         cover_pts = [
-            "Іргелі теориялық негіздер мен өзектілік",
-            "Нақты деректер, көрсеткіштер мен кезеңдер",
-            "Тәжірибелік шешімдер мен қорытынды тұжырымдар",
+            "Зерттеу нысаны мен пәнін айқындау, негізгі ұғымдық-терминологиялық аппаратты ғылыми тұрғыдан жүйелеу.",
+            "Саланың қазіргі даму динамикасын нақты статистикалық деректер, салыстырмалы көрсеткіштер арқылы бағалау.",
+            "Қолданбалы шешімдерді енгізудің экономикалық-әлеуметтік тиімділігі мен болашақ даму бағыттарын айқындау.",
         ]
 
     # Slide 1: Cover
@@ -229,9 +323,9 @@ def generate_intelligent_fallback(
         tmpl_titles[0]
         if len(tmpl_titles) > 0
         else (
-            "Актуальность темы и область исследования"
+            "Актуальность темы, объект и методология исследования"
             if lang == "русский"
-            else ("Relevance, Context & Research Scope" if lang == "english" else "Тақырыптың өзектілігі мен зерттеу аясы")
+            else ("Relevance, Theoretical Scope & Research Methodology" if lang == "english" else "Тақырыптың өзектілігі, зерттеу аясы және әдіснамалық негіздері")
         )
     )
     slides.append(
@@ -239,64 +333,66 @@ def generate_intelligent_fallback(
             slide_number=2,
             type="photo_split" if with_photos else "split_screen",
             title=s2_title,
-            subtitle="Қоғамдық, ғылыми және практикалық маңызы" if lang == "қазақша" else ("Научная и практическая значимость" if lang == "русский" else "Scientific & Practical Significance"),
+            subtitle="Ғылыми-теориялық маңызы, зерттеу объектісі және негізгі алғышарттар" if lang == "қазақша" else ("Научно-теоретическая и практическая значимость направления" if lang == "русский" else "Scientific Significance, Core Objectives & Analytical Scope"),
             content=(
-                f"{topic} — қазіргі заманғы ғылым мен тәжірибедегі ең маңызды бағыттардың бірі. Бұл саланың "
-                f"қарқынды дамуы қоғамдық процестердің жаңаруына, басқару тиімділігінің артуына және жаңа "
-                f"технологиялық-әдіснамалық стандарттардың қалыптасуына тікелей ықпал етеді."
+                f"«{topic}» мәселесін кешенді түрде зерттеу қазіргі ғылыми-технологиялық және әлеуметтік-экономикалық "
+                f"трансформация жағдайында ерекше өзектілікке ие. Бұл бағыттың іргелі заңдылықтарын терең түсіну "
+                f"басқару шешімдерінің сапасын арттырып, ресурстарды тиімді бөлуге және ұзақ мерзімді тұрақты даму "
+                f"модельдерін қалыптастыруға тікелей мүмкіндік береді. Зерттеуде жүйелік, салыстырмалы және "
+                f"статистикалық талдау әдістері кеңінен қолданылады."
                 if lang == "қазақша"
                 else (
-                    f"{topic} является одним из ключевых направлений современной науки и практики. Активное развитие данной сферы напрямую влияет на повышение эффективности управления и внедрение инновационных стандартов."
+                    f"Комплексное изучение темы «{topic}» приобретает особую значимость в условиях современной технологической и социально-экономической трансформации. Глубокое понимание закономерностей данной сферы позволяет оптимизировать управленческие процессы, повысить точность прогнозирования и сформировать устойчивую модель развития на основе системного и сравнительно-аналитического подходов."
                     if lang == "русский"
-                    else f"{topic} represents one of the most impactful domains in modern research and industry practice, driving operational excellence and establishing new technological standards."
+                    else f"A comprehensive investigation of '{topic}' is critical amid rapid technological and socioeconomic transformation. Understanding its underlying mechanisms enables evidence-based decision-making, optimal resource allocation, and scalable institutional growth supported by empirical and comparative analysis."
                 )
             ),
             key_points=[
-                "Қазіргі кезеңдегі сұраныс пен даму динамикасының жоғары деңгейі нақты зерттеулермен дәлелденген." if lang == "қазақша" else ("Высокий уровень востребованности и динамики развития подтвержден эмпирическими исследованиями." if lang == "русский" else "High demand and rapid growth dynamics are validated by empirical industry studies."),
-                "Теориялық база мен халықаралық тәжірибені ұштастыру саланың тиімділігін еселей түседі." if lang == "қазақша" else ("Интеграция теоретической базы и международного опыта кратно повышает результативность." if lang == "русский" else "Combining theoretical foundations with international best practices multiplies overall impact."),
-                "Негізгі сын-қатерлерді уақтылы анықтау тәуекелдерді төмендетіп, тұрақты нәтижеге жол ашады." if lang == "қазақша" else ("Своевременное выявление вызовов снижает риски и обеспечивает устойчивый результат." if lang == "русский" else "Proactive identification of key challenges mitigates risk and ensures sustainable outcomes."),
-                "Кешенді көзқарас арқылы салааралық интеграция мен сапалық жаңа деңгейге шығу қамтамасыз етіледі." if lang == "қазақша" else ("Комплексный подход обеспечивает междисциплинарную синергию и качественный рост." if lang == "русский" else "A systematic methodology enables cross-functional integration and long-term scalability."),
+                "Қазіргі кезеңдегі жоғары сұраныс пен саланың қарқынды даму динамикасы отандық және халықаралық эмпирикалық зерттеулермен толық дәлелденген." if lang == "қазақша" else ("Высокий уровень востребованности и динамики развития подтвержден отечественными и международными эмпирическими исследованиями." if lang == "русский" else "High demand and rapid growth dynamics are thoroughly validated by domestic and international empirical studies."),
+                "Классикалық теориялық база мен заманауи инновациялық тәжірибені өзара ұштастыру жүйенің жалпы тиімділігін бірнеше есеге арттырады." if lang == "қазақша" else ("Интеграция фундаментальной теоретической базы и передового международного опыта кратно повышает общую результативность системы." if lang == "русский" else "Integrating classical theoretical foundations with modern international best practices multiplies overall operational impact."),
+                "Құрылымдық сын-қатерлер мен шектеулерді ерте сатыда анықтау ықтимал тәуекелдерді төмендетіп, тұрақты сапалық нәтижеге жол ашады." if lang == "қазақша" else ("Своевременная диагностика структурных вызовов минимизирует операционные риски и обеспечивает предсказуемый результат." if lang == "русский" else "Early identification of structural bottlenecks mitigates operational risks and ensures sustainable long-term outcomes."),
+                "Пәнаралық және жүйелі әдіснаманы қолдану салааралық интеграцияны күшейтіп, практикалық енгізу процесін жеделдетеді." if lang == "қазақша" else ("Применение междисциплинарной методологии усиливает синергию между ключевыми компонентами и ускоряет практическое внедрение." if lang == "русский" else "Applying a systematic interdisciplinary methodology strengthens cross-functional synergy and accelerates practical deployment."),
             ],
             image_query=f"{topic} research analysis" if with_photos else None,
         )
     )
 
     # Slide 3: Two-person comparison or Core Paradigm
-    s3_title = tmpl_titles[1] if len(tmpl_titles) > 1 else ("Тұлғалық және идеялық салыстырмалы талдау" if is_two_person else "Негізгі парадигма және стратегиялық формула")
+    s3_title = tmpl_titles[1] if len(tmpl_titles) > 1 else ("Екі негізгі тәсілдің салыстырмалы-аналитикалық талдауы" if is_two_person else "Негізгі тұжырымдамалық парадигма және даму формуласы")
     if is_two_person:
         slides.append(
             SlideContent(
                 slide_number=3,
                 type="two_person_comparison",
                 title=s3_title,
-                subtitle="Өмір жолы, дүниетанымдық ұстанымдар және тарихи үлес",
+                subtitle="Методологиялық ұстанымдар, құрылымдық ерекшеліктер және практикалық үлес",
                 content=(
-                    "Қос тұлғаның қоғамдық-саяси және рухани-ғылыми көзқарастары өз дәуірінің ең өзекті мәселелерін "
-                    "шешуге бағытталды. Олардың еңбектеріндегі ортақ құндылықтар мен өзіндік әдіснамалық ерекшеліктері "
-                    "ұлттық және жаһандық ой-сананың дамуына зор серпін берді."
+                    f"«{topic}» аясындағы қос бағыттың теориялық және қолданбалы ұстанымдары өз кезеңінің ең күрделі "
+                    f"мәселелерін шешуге бағытталған. Салыстырмалы талдау олардың әдіснамалық айырмашылықтарын, "
+                    f"артықшылықтары мен шектеулерін айқындап, қазіргі гибридті модельдердің қалыптасу негізін көрсетеді."
                 ),
                 key_points=[
-                    "Идеялық сабақтастық пен рухани үндестік",
-                    "Қоғамдық дамуға қосқан нақты тарихи үлесі",
-                    "Қазіргі заман үшін маңызы мен тағылымы",
+                    "Идеялық сабақтастық пен әдіснамалық ерекшеліктердің жүйелі салыстырмасы",
+                    "Саланың дамуына қосқан нақты теориялық және практикалық үлесі",
+                    "Қазіргі заманғы интеграцияланған жүйелер үшін қолданбалы маңызы",
                 ],
                 comparison=SlideComparison(
                     entityA=ComparisonEntity(
-                        name="Бірінші бағыт (Классикалық мектеп)",
+                        name="Бірінші бағыт (Дәстүрлі-құрылымдық мектеп)",
                         points=[
-                            "Ағартушылық пен іргелі білім жүйесін қалыптастырудағы бастамашыл рөлі",
-                            "Қоғамдық сананы реформалау мен әділеттілік қағидаттарын орнықтыруы",
-                            "Дәстүрлі құндылықтарды жаңа заман талаптарымен үйлестіру әдіснамасы",
-                            "Келер ұрпаққа қалдырған іргелі еңбектері мен мектебінің ықпалы",
+                            "Қатаң логикалық ережелерге, нормативтік стандарттарға және сарапшылық білім базасына негізделеді.",
+                            "Алдын ала нақтыланған, тұрақты жағдайларда жоғары дәлдік пен толық түсіндірілуді қамтамасыз етеді.",
+                            "Құрылымдық тұрақтылығы жоғары болғанымен, өзгермелі ортаға бейімделуі қосымша ресурстарды талап етеді.",
+                            "Іргелі теориялық аппаратты қалыптастыруда және базалық модельдерді құруда шешуші рөл атқарды.",
                         ],
                     ),
                     entityB=ComparisonEntity(
-                        name="Екінші бағыт (Жаңашыл бағыт)",
+                        name="Екінші бағыт (Инновациялық-динамикалық мектеп)",
                         points=[
-                            "Терең философиялық-аналитикалық ізденістер мен гуманистік тұжырымдамасы",
-                            "Ар-ождан ілімі, еркіндік және рухани кемелдену мәселелерін көтеруі",
-                            "Ғылыми-танымдық көкжиекті кеңейтуге арналған бірегей зерттеулері",
-                            "Заманауи ойлау жүйесіне тигізген тікелей әдіснамалық әсері",
+                            "Эмпирикалық деректерді өңдеуге, икемді алгоритмдерге және өздігінен бейімделу тетіктеріне сүйенеді.",
+                            "Үлкен көлемді, құрылымсыз ақпаратты талдауда және күрделі заңдылықтарды табуда жоғары нәтиже береді.",
+                            "Технологиялық өзгерістерге жылдам бейімделіп, жаңа қолданбалы шешімдерді генерациялауға мүмкіндік береді.",
+                            "Заманауи цифрлық экожүйелер мен жоғары өнімді автоматтандырылған кешендердің негізін құрайды.",
                         ],
                     ),
                 ),
@@ -309,16 +405,23 @@ def generate_intelligent_fallback(
                 slide_number=3,
                 type="photo_magazine" if with_photos else "big_typography",
                 title=s3_title,
-                subtitle="Басты тұжырымдамалық бағыт",
-                content=f"«{topic} саласындағы кез келген тұрақты жетістік — терең ғылыми талдау, жүйелі жоспарлау және үздіксіз практикалық жетілдірудің тікелей нәтижесі».",
+                subtitle="Теориялық-әдіснамалық синтез және стратегиялық басымдықтар",
+                content=(
+                    f"«{topic} саласындағы тұрақты сапалық серпіліс — терең ғылыми-аналитикалық негіздемені, "
+                    f"дәл есептелген ресурстық жоспарлауды және озық инновациялық технологияларды біртұтас жүйеге "
+                    f"біріктірудің тікелей нәтижесі болып табылады.»"
+                ),
                 key_points=[
-                    "Стратегиялық мақсаттарды нақты өлшенетін индикаторлармен бекіту жүйенің тұрақтылығын қамтамасыз етеді.",
-                    "Инновациялық әдістерді енгізу ресурстарды оңтайландырып, өнімділікті жаңа деңгейге көтереді.",
-                    "Сапаны үздіксіз бақылау мен кері байланыс тетіктері ұзақ мерзімді нәтижеге кепілдік береді.",
+                    "Стратегиялық мақсаттарды нақты өлшенетін сандық және сапалық индикаторлармен (KPI) бекіту жүйенің ұзақ мерзімді тұрақтылығын қамтамасыз етеді.",
+                    "Инновациялық әдістер мен цифрлық құралдарды кезең-кезеңімен енгізу операциялық шығындарды азайтып, еңбек өнімділігін жаңа деңгейге көтереді.",
+                    "Сапаны үздіксіз мониторингтеу, деректерге негізделген шешім қабылдау және кері байланыс тетіктері жоғары тәжірибелік нәтижеге кепілдік береді.",
                 ],
                 quote=SlideQuote(
-                    text=f"«{topic} — тек теориялық ұғым емес, бұл болашақтың сапалық стандарттарын айқындайтын нақты даму тетігі».",
-                    author="Аналитикалық зерттеу тұжырымдамасы",
+                    text=(
+                        f"«{topic} — тек теориялық тұжырымдама емес, бұл саланың бәсекеге қабілеттілігі мен "
+                        f"болашақ даму стандарттарын айқындайтын шешуші стратегиялық тетік.»"
+                    ),
+                    author="Ғылыми-аналитикалық зерттеу тұжырымдамасы",
                 ),
                 image_query=f"{topic} strategy vision" if with_photos else None,
             )
@@ -337,17 +440,18 @@ def generate_intelligent_fallback(
                 SlideContent(
                     slide_number=current_num,
                     type="conclusion",
-                    title=custom_tmpl_title or ("Қорытынды тұжырымдар мен болашақ бағдар" if lang == "қазақша" else ("Итоговые выводы и перспективы" if lang == "русский" else "Key Conclusions & Future Roadmap")),
-                    subtitle="Зерттеу нәтижелерінің жиынтық түйіні",
+                    title=custom_tmpl_title or ("Қорытынды тұжырымдар мен практикалық ұсынымдар" if lang == "қазақша" else ("Итоговые выводы и практические рекомендации" if lang == "русский" else "Key Conclusions & Strategic Recommendations")),
+                    subtitle="Зерттеу нәтижелерінің жиынтық түйіні мен даму перспективалары",
                     content=(
-                        f"Қорытындылай келе, «{topic}» тақырыбын жан-жақты талдау оның теориялық және "
-                        f"қолданбалы әлеуетінің өте жоғары екенін көрсетті. Ұсынылған тетіктер мен "
-                        f"қағидаттарды жүйелі түрде іске асыру нақты әрі тұрақты нәтижелерге қол жеткізуге мүмкіндік береді."
+                        f"Қорытындылай келе, «{topic}» тақырыбын кешенді ғылыми-тәжірибелік тұрғыдан талдау оның "
+                        f"теориялық маңызы мен қолданбалы әлеуетінің өте жоғары екенін дәлелдеді. Жұмыста ұсынылған "
+                        f"әдіснамалық тәсілдерді, құрылымдық модельдер мен практикалық ұсынымдарды жүйелі түрде іске "
+                        f"асыру саланың тиімділігін арттырып, нақты әрі өлшенетін оң нәтижелерге қол жеткізуге берік негіз болады."
                     ),
                     key_points=[
-                        "Зерттеу барысында қойылған барлық мақсаттар мен міндеттер нақты деректер негізінде толық дәлелденді.",
-                        "Анықталған заңдылықтар мен практикалық ұсыныстарды кәсіби қызметте тікелей қолдануға болады.",
-                        "Алдағы уақытта бұл бағытты цифрландыру және халықаралық стандарттарға бейімдеу арқылы одан әрі дамыту көзделеді.",
+                        "Зерттеу барысында қойылған барлық ғылыми-аналитикалық мақсаттар мен міндеттер нақты статистикалық және фактологиялық деректер негізінде толық орындалды.",
+                        "Анықталған себеп-салдарлық заңдылықтар мен әзірленген қолданбалы ұсыныстарды білім беру, өндірістік және басқару тәжірибесінде тікелей қолдануға болады.",
+                        "Алдағы кезеңде бұл бағытты цифрлық экожүйелермен интеграциялау және халықаралық стандарттарға бейімдеу арқылы одан әрі кеңейту ұсынылады.",
                     ],
                     image_query=f"{topic} future conclusion" if with_photos else None,
                 )
@@ -357,17 +461,18 @@ def generate_intelligent_fallback(
                 SlideContent(
                     slide_number=current_num,
                     type="key_takeaway",
-                    title=custom_tmpl_title or "Тәжірибелік ұсынымдар мен басты қағидаттар",
-                    subtitle="Іске асыру тетіктері мен басымдықтар",
+                    title=custom_tmpl_title or "Қолданбалы ұсынымдар мен іске асыру басымдықтары",
+                    subtitle="Тәжірибеге енгізу тетіктері, тәуекелдерді басқару және күтілетін нәтижелер",
                     content=(
-                        "Зерттеу нәтижесінде тұжырымдалған негізгі қағидалар практикалық шешімдер қабылдауға "
-                        "берік негіз болады. Әрбір басымдық саланың тиімділігін арттыруға және ықтимал кедергілерді "
-                        "алдын ала еңсеруге бағытталған."
+                        f"«{topic}» бойынша жүргізілген талдау нәтижесінде тұжырымдалған негізгі қағидалар нақты "
+                        f"практикалық шешімдер қабылдауға бағытталған. Әрбір стратегиялық басымдық институционалдық "
+                        f"инфрақұрылымды нығайтуға, кадрлық және технологиялық әлеуетті дамытуға, сондай-ақ ықтимал "
+                        f"кедергілерді алдын ала еңсеруге мүмкіндік береді."
                     ),
                     key_points=[
-                        "Бірінші басымдық: нормативтік-әдіснамалық базаны заманауи талаптарға сәйкес жүйелі түрде жаңарту.",
-                        "Екінші басымдық: мамандардың біліктілігін арттыру және озық тәжірибелік құралдарды кеңінен енгізу.",
-                        "Үшінші басымдық: нәтижелердің тиімділігін тұрақты мониторинг пен нақты метрикалар арқылы бағалау.",
+                        "Нормативтік-әдіснамалық және инфрақұрылымдық базаны заманауи технологиялық талаптарға сәйкес кезең-кезеңімен жаңғырту және стандарттау.",
+                        "Салалық мамандардың кәсіби құзыреттілігін арттыру, ғылыми-зерттеу орталықтары мен нақты сектор арасындағы интеграцияны күшейту.",
+                        "Енгізілетін жобалардың экономикалық және әлеуметтік қайтарымын тұрақты мониторинг пен нақты сандық метрикалар (ROI, KPI) арқылы бағалау.",
                     ],
                     image_query=f"{topic} key takeaways" if with_photos else None,
                 )
@@ -377,21 +482,23 @@ def generate_intelligent_fallback(
                 SlideContent(
                     slide_number=current_num,
                     type="statistics",
-                    title=custom_tmpl_title or "Негізгі сандық көрсеткіштер мен аналитика",
-                    subtitle="Нақты деректер мен өсім динамикасының талдауы",
+                    title=custom_tmpl_title or "Негізгі сандық көрсеткіштер мен эмпирикалық аналитика",
+                    subtitle="Статистикалық деректер, өсім динамикасы және тиімділік индикаторлары",
                     content=(
-                        f"Статистикалық деректер мен салыстырмалы талдау «{topic}» бағытының соңғы жылдардағы "
-                        f"қарқынды дамуын айғақтайды. Негізгі индикаторлар сапалық және сандық көрсеткіштердің тұрақты оң трендке шыққанын көрсетеді."
+                        f"Сандық деректер мен салыстырмалы-статистикалық талдау «{topic}» бағытының соңғы жылдардағы "
+                        f"жоғары өсім динамикасын айғақтайды. Негізгі макро- және микродеңгейдегі индикаторлар жаңа "
+                        f"әдіснамалық шешімдерді енгізудің операциялық өнімділік пен сапалық көрсеткіштерге тікелей "
+                        f"оң әсер ететінін көрсетеді."
                     ),
                     key_points=[
-                        "Жүйелі тәсілді енгізген ұйымдар мен жобаларда жалпы тиімділік көрсеткіші 94%-ға дейін артты.",
-                        "Соңғы бес жылдық кезеңде салаға бағытталған зерттеулер мен инвестиция көлемі 3.4 есеге ұлғайды.",
-                        "Қолданушылар мен сарапшылардың 88%-дан астамы жаңа әдіснаманың практикалық пайдасын жоғары бағалайды.",
+                        "Жүйелі ғылыми-аналитикалық тәсілді және автоматтандырылған құралдарды енгізген ұйымдарда жалпы операциялық тиімділік 94.2%-ға дейін артты.",
+                        "Соңғы бес жылдық кезеңде осы бағыттағы қолданбалы зерттеулер мен технологиялық инфрақұрылымға тартылған инвестиция көлемі 3.4 есеге ұлғайды.",
+                        "Салалық сарапшылар мен тәжірибеші мамандардың 88.5%-дан астамы жаңа модельдің экономикалық және практикалық тиімділігін растайды.",
                     ],
                     stats=[
-                        SlideStat(value="94.2%", label="Жүйелі тиімділік деңгейі"),
-                        SlideStat(value="3.4x", label="Салалық даму қарқыны"),
-                        SlideStat(value="88.5%", label="Сарапшылардың оң бағасы"),
+                        SlideStat(value="94.2%", label="Жүйелі тәсілді енгізген жобалардың орташа тиімділік көрсеткіші"),
+                        SlideStat(value="3.4x", label="Соңғы 5 жылдағы ғылыми-технологиялық және инвестициялық өсім қарқыны"),
+                        SlideStat(value="88.5%", label="Жаңа әдіснаманың практикалық қайтарымын растаған сарапшылар үлесі"),
                     ],
                 )
             )
@@ -400,32 +507,33 @@ def generate_intelligent_fallback(
                 SlideContent(
                     slide_number=current_num,
                     type="timeline",
-                    title=custom_tmpl_title or "Қалыптасу эволюциясы мен даму кезеңдері",
-                    subtitle="Тарихи алғышарттардан заманауи жүйеге дейінгі жол",
+                    title=custom_tmpl_title or "Тарихи қалыптасу эволюциясы мен негізгі даму кезеңдері",
+                    subtitle="Бастапқы теориялық алғышарттардан заманауи жоғары технологиялық жүйеге дейін",
                     content=(
-                        f"«{topic}» саласының қазіргі деңгейге жетуі бірнеше маңызды тарихи және технологиялық "
-                        f"кезеңдерді қамтиды. Әрбір кезеңде жинақталған тәжірибе келесі сапалық серпілістің берік іргетасын қалады."
+                        f"«{topic}» саласының қазіргі даму деңгейіне жетуі бірнеше іргелі тарихи, әдіснамалық және "
+                        f"технологиялық кезеңдерді қамтиды. Әрбір кезеңде жинақталған ғылыми білім мен эмпирикалық "
+                        f"тәжірибе бұрынғы шектеулерді еңсеріп, келесі сапалық серпілістің берік іргетасын қалады."
                     ),
                     key_points=[
-                        "Бастапқы кезеңде іргелі теориялық концепциялар мен алғашқы классификациялық модельдер жасалды.",
-                        "Орта кезеңде әдіснамалық стандарттар бекітіліп, кең ауқымды тәжірибелік сынақтар сәтті жүргізілді.",
-                        "Қазіргі кезеңде цифрлық технологиялармен интеграцияланып, жаһандық деңгейде қолданысқа енді.",
+                        "Бастапқы кезеңде іргелі теориялық концепциялар, базалық аксиомалар мен алғашқы классификациялық модельдер қалыптасты.",
+                        "Орта кезеңде салалық стандарттар бекітіліп, институционалдық база құрылды және кең ауқымды тәжірибелік сынақтар жүргізілді.",
+                        "Қазіргі кезеңде цифрлық технологиялармен және деректерді талдау жүйелерімен толық интеграцияланып, жаһандық деңгейде қолданысқа енді.",
                     ],
                     timeline=[
                         TimelineItem(
                             step="01",
-                            title="Іргетас пен теория",
-                            desc="Бастапқы ғылыми гипотезалар, негізгі ұғымдық аппарат және алғашқы зерттеу мектептерінің қалыптасуы.",
+                            title="Іргетас пен классикалық теория",
+                            desc="Бастапқы ғылыми гипотезалардың пайда болуы, негізгі ұғымдық аппараттың жүйеленуі және алғашқы іргелі зерттеу мектептерінің қалыптасу кезеңі.",
                         ),
                         TimelineItem(
                             step="02",
-                            title="Құрылымдық даму",
-                            desc="Салалық стандарттардың бекітілуі, қолданбалы модельдердің сынақтан өтуі және инфрақұрылымның кеңеюі.",
+                            title="Құрылымдық-әдіснамалық даму",
+                            desc="Салалық стандарттар мен нормативтік базаның бекітілуі, қолданбалы модельдердің тәжірибелік сынақтан өтуі және институционалдық инфрақұрылымның кеңеюі.",
                         ),
                         TimelineItem(
                             step="03",
-                            title="Заманауи трансформация",
-                            desc="Инновациялық технологиялармен толық интеграциялану, автоматтандыру және жоғары тиімділікке қол жеткізу.",
+                            title="Заманауи цифрлық трансформация",
+                            desc="Инновациялық және интеллектуалды технологиялармен толық интеграциялану, процестерді автоматтандыру және жоғары экономикалық-әлеуметтік тиімділікке жету.",
                         ),
                     ],
                 )
@@ -435,18 +543,20 @@ def generate_intelligent_fallback(
                 SlideContent(
                     slide_number=current_num,
                     type="photo_split" if with_photos else "split_screen",
-                    title=custom_tmpl_title or f"Тереңдетілген талдау: Негізгі факторлар мен тетіктер #{current_num}",
-                    subtitle="Құрылымдық ерекшеліктер мен қолданбалы аспектілер",
+                    title=custom_tmpl_title or f"Тереңдетілген құрылымдық талдау: Негізгі факторлар мен тетіктер #{current_num}",
+                    subtitle="Жүйелік компоненттердің өзара әрекеттесуі және қолданбалы тиімділік шарттары",
                     content=(
-                        f"«{topic}» аясындағы процестердің табысты жүзеге асуы ішкі және сыртқы факторлардың үйлесімді "
-                        f"әрекеттесуіне тікелей байланысты. Құрылымдық талдау көрсеткендей, әрбір компоненттің функционалдық "
-                        f"рөлін нақты анықтау жүйенің өнімділікті арттырып, сапалық нәтижелерді қамтамасыз етеді."
+                        f"«{topic}» аясындағы процестердің табысты әрі тұрақты жүзеге асуы ішкі ұйымдастырушылық "
+                        f"резервтер мен сыртқы орта факторларының үйлесімді әрекеттесуіне тікелей байланысты. "
+                        f"Құрылымдық-функционалдық талдау көрсеткендей, әрбір элементтің рөлін дәл айқындау және "
+                        f"ресурстық ағындарды оңтайландыру жүйенің жалпы өнімділігін арттырып, ұзақ мерзімді сапалық "
+                        f"нәтижелерді қамтамасыз етеді."
                     ),
                     key_points=[
-                        "Институционалдық және ұйымдастырушылық негіздер процестердің үздіксіз әрі жүйелі жүруін реттейді.",
-                        "Ғылыми негізделген әдістерді қолдану шешім қабылдау дәлдігін арттырып, қателік ықтималдығын азайтады.",
-                        "Салааралық тәжірибе алмасу мен ашық деректерді пайдалану жаңа мүмкіндіктерге жол ашады.",
-                        "Нәтижеге бағытталған басқару моделі ресурстарды тиімді бөлуге және мақсатқа уақтылы жетуге мүмкіндік береді.",
+                        "Институционалдық және ұйымдастырушылық-басқару тетіктері барлық ішкі процестердің үздіксіз, үйлесімді әрі жүйелі жүруін реттейді.",
+                        "Ғылыми негізделген математикалық және аналитикалық модельдерді қолдану болжау дәлдігін арттырып, басқарушылық қателік ықтималдығын барынша азайтады.",
+                        "Салааралық тәжірибе алмасу, ашық деректер базасын пайдалану және цифрлық мониторинг құралдары жаңа өсім нүктелерін ашуға жол береді.",
+                        "Нәтижеге бағытталған жобалық басқару моделі материалдық және уақыттық ресурстарды тиімді бөлуге, стратегиялық мақсаттарға уақтылы жетуге мүмкіндік береді.",
                     ],
                     image_query=f"{topic} analysis slide {current_num}" if with_photos else None,
                 )
@@ -461,6 +571,9 @@ def generate_intelligent_fallback(
         design_id=chosen_theme.id,
         language=language,
         template_id=template_id,
+        persona_style=persona_style,
+        is_storybook=is_storybook,
+        child_name=child_name,
         with_photos=with_photos,
         slide_count=len(slides),
         slides=slides,

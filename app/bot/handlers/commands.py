@@ -26,6 +26,9 @@ from app.bot.keyboards.inline import (
     build_admin_kaspi_settings_keyboard,
     build_admin_price_editor_keyboard,
     build_admin_gen_modes_keyboard,
+    build_persona_styles_keyboard,
+    build_ui_language_keyboard,
+    build_direction_selection_keyboard,
 )
 
 
@@ -313,3 +316,92 @@ def get_templates_message(chat_id: int) -> Tuple[str, Dict[str, Any]]:
         f"Қажетті академиялық немесе кәсіби құрылымды таңдаңыз:"
     )
     return text, build_templates_keyboard(session, mode=mode)
+
+
+def get_persona_styles_message(chat_id: int, mode: str = "default") -> Tuple[str, Dict[str, Any]]:
+    session = get_telegram_session(chat_id)
+    cur = getattr(session, "personaStyle", "academic_universal")
+    p_info = config.PERSONA_STYLES.get(cur, config.PERSONA_STYLES["academic_universal"])
+    text = (
+        f"🎭 <b>КУРС / МАМАНДЫҚ СТИЛІН ТАҢДАУ (ПЕРСОНАЛИЗАЦИЯ)</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Қазіргі таңдалған стиль: <b>{p_info['title']}</b>\n\n"
+        f"• <b>🧬 Медицина студенті → Ғылыми стиль:</b> Клиникалық терминология, этиология, патогенез және дәлелді статистика.\n"
+        f"• <b>💼 Бизнес студенті → Презентациялық стиль:</b> KPI, ROI, нарық көлемі (TAM/SAM/SOM) және іскерлік питч.\n"
+        f"• <b>👩‍🏫 Мұғалім → Педагогикалық стиль:</b> Оқу мақсаты, түсінікті мысалдар, дидактикалық құрылым.\n"
+        f"• <b>🎓 Студент → Академиялық стиль:</b> ЖОО стандарты, теория + талдау + қорытынды.\n"
+        f"• <b>🧚 Ертегі / Балалар стилі:</b> Иллюстрацияланған ертегі және балаларға арналған қызықты тіл.\n\n"
+        f"👇 Өзіңізге сәйкес стильді таңдаңыз:"
+    )
+    return text, build_persona_styles_keyboard(session, mode=mode)
+
+def get_language_prompt_message() -> Tuple[str, Dict[str, Any]]:
+    """Shown on /start: asks the user to choose the bot interface language (Қазақша or Русский)."""
+    text = (
+        "👋 <b>Қош келдіңіз! / Добро пожаловать!</b>\n\n"
+        "🇰🇿 Боттың тілін таңдаңыз:\n"
+        "🇷🇺 Выберите язык интерфейса бота:"
+    )
+    return text, build_ui_language_keyboard()
+
+
+def get_direction_menu_message(
+    chat_id: int,
+    is_new: bool = False,
+    streak_days: int = 1,
+    streak_bonus: bool = False,
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Shown right after language selection (or when clicking '➕ Жаңа презентация жасау'):
+    Asks the user to choose one of the 3 strictly separated presentation directions.
+    """
+    session = get_telegram_session(chat_id)
+    ui_lang = getattr(session, "uiLanguage", "kk")
+    b = get_user_credit_breakdown(chat_id)
+
+    if str(ui_lang).lower().strip() == "ru":
+        bonus_banner = (
+            f"🎁 <b>За регистрацию вам начислена {config.WELCOME_FREE_CREDITS} БЕСПЛАТНАЯ презентация!</b>\n\n"
+            if is_new
+            else ""
+        )
+        streak_banner = (
+            f"🔥 <b>За вход 3 дня подряд вам начислена +1 БЕСПЛАТНАЯ презентация!</b> (Стрик: {streak_days} дн.)\n\n"
+            if streak_bonus
+            else f"🔥 Ежедневный стрик: <b>{streak_days} дн.</b> (3 дня подряд → +1 бесплатная презентация)\n"
+        )
+        text = (
+            f"🤖 <b>AI Presentation Bot Pro</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"{bonus_banner}"
+            f"🎫 <b>Ваш баланс: {b['total']} през.</b> (🎁 Бонус: {b['bonus']} | 📄 Без фото: {b['no_photo']} | 🖼 Фото: {b['ddg_photo']} | ✨ OpenAI: {b['openai_photo']})\n"
+            f"{streak_banner}\n"
+            f"👇 <b>Выберите направление презентации:</b>\n"
+            f"1️⃣ <b>🎓 Академическая презентация:</b> Тема → Язык → Кол-во слайдов → С фото / Без фото.\n"
+            f"2️⃣ <b>🧸 Детская презентация (990 ₸):</b> Тема → Язык → Кол-во слайдов.\n"
+            f"3️⃣ <b>🧚 Сказка-презентация (1 490 ₸ без фото / 4 990 ₸ с фото ребенка):</b> Имя ребенка + тема → Кол-во страниц."
+        )
+        return text, build_direction_selection_keyboard("ru")
+
+    bonus_banner = (
+        f"🎁 <b>Сізге тіркелгеніңіз үшін {config.WELCOME_FREE_CREDITS} ТЕГІН презентация берілді!</b>\n\n"
+        if is_new
+        else ""
+    )
+    streak_banner = (
+        f"🔥 <b>3 күн қатарынан кіргеніңіз үшін +1 ТЕГІН презентация қосылды!</b> (Стрик: {streak_days} күн)\n\n"
+        if streak_bonus
+        else f"🔥 Күнделікті стрик: <b>{streak_days} күн</b> (3 күн қатарынан кірсеңіз → +1 тегін презентация)\n"
+    )
+    text = (
+        f"🤖 <b>AI Presentation Bot Pro</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{bonus_banner}"
+        f"🎫 <b>Сіздің балансыңыз: {b['total']} през</b> (🎁 Бонус: {b['bonus']} | 📄 Фотосыз: {b['no_photo']} | 🖼 Фото: {b['ddg_photo']} | ✨ OpenAI: {b['openai_photo']})\n"
+        f"{streak_banner}\n"
+        f"👇 <b>Презентацияның бағытын таңдаңыз:</b>\n"
+        f"1️⃣ <b>🎓 Академиялық презентация:</b> Тақырып → Презентация тілі → Бет саны → Фотомен / Фотосыз.\n"
+        f"2️⃣ <b>🧸 Балаларға арналған презентация (990 ₸):</b> Тақырып → Презентация тілі → Бет саны.\n"
+        f"3️⃣ <b>🧚 Ертегі-презентация (1 490 ₸ фотосыз / 4 990 ₸ бала фотосымен):</b> Баланың аты мен тақырып → Бет саны."
+    )
+    return text, build_direction_selection_keyboard("kk")

@@ -8,6 +8,7 @@ Supports:
 """
 import io
 import re
+import time
 import logging
 from typing import Optional, Tuple, Dict, Any, List
 
@@ -30,7 +31,11 @@ from app.core.db import (
     get_user_full_history,
     get_time_series_stats,
     get_dynamic_tariffs,
+    get_user_persona_style,
+    get_cohort_analysis_stats,
+    get_flagged_users,
 )
+from app.core.monitoring import inc_metric, observe_generation_latency, get_prometheus_metrics_snapshot
 from app.core.doc_parser import (
     extract_text_from_uploaded_file,
     generate_speaker_defense_text,
@@ -105,48 +110,86 @@ async def generate_deck_for_session(
         else detect_best_theme_for_topic(topic, with_photos=with_photos)
     )
 
+    t_start = time.time()
+    inc_metric("generations_total", 1)
+    inc_metric("active_generations", 1)
+
+    persona_style = getattr(session, "personaStyle", None) or (get_user_persona_style(user_id) if user_id else "academic_universal")
+    is_storybook = bool(getattr(session, "isStorybook", False) or template_id == "storybook")
+    child_name = getattr(session, "childName", None)
+    child_avatar_desc = getattr(session, "childAvatarDesc", None)
+    if is_storybook:
+        with_photos = True
+        template_id = "storybook"
+        persona_style = "kids_fairy"
+
     doc_text = session.pendingDocumentText
     from_cache = False
+    cache_tmpl_key = f"{template_id}:{persona_style}:{child_name or ''}:{(child_avatar_desc or '')[:32]}" if (is_storybook or persona_style != "academic_universal") else template_id
 
-    cached_pres = get_cached_presentation(
-        topic, count, doc_text=doc_text, language=language, template_id=template_id
-    )
-    if cached_pres and len(cached_pres.slides) == count:
-        logger.info(
-            f"⚡ Smart Cache HIT for topic='{topic}' ({count} slides, lang={language})! Applying design='{selected_theme.id}'."
+    try:
+        cached_pres = get_cached_presentation(
+            topic, count, doc_text=doc_text, language=language, template_id=cache_tmpl_key
         )
-        presentation = cached_pres
-        presentation.design_id = selected_theme.id
-        presentation.language = language
-        presentation.template_id = template_id
-        from_cache = True
-    else:
-        presentation = await ai_client.generate_presentation(
-            topic=topic,
-            slide_count=count,
-            design_id=selected_theme.id,
-            language=language,
-            document_text=doc_text,
-            template_id=template_id,
-            with_photos=with_photos,
-            is_paid_user=paid_flag,
-            user_id=user_id,
-        )
-        presentation.design_id = selected_theme.id
-        try:
-            save_cached_presentation(
-                topic, count, presentation, doc_text=doc_text, language=language, template_id=template_id
+        if cached_pres and len(cached_pres.slides) == count:
+            logger.info(
+                f"⚡ Smart Cache HIT for topic='{topic}' ({count} slides, lang={language})! Applying design='{selected_theme.id}'."
             )
-        except Exception as e:
-            logger.warning(f"Failed to save to presentation cache: {e}")
+            presentation = cached_pres
+            presentation.design_id = selected_theme.id
+            presentation.language = language
+            presentation.template_id = template_id
+            presentation.persona_style = persona_style
+            presentation.is_storybook = is_storybook
+            presentation.child_name = child_name
+            presentation.child_avatar_desc = child_avatar_desc
+            from_cache = True
+        else:
+            presentation = await ai_client.generate_presentation(
+                topic=topic,
+                slide_count=count,
+                design_id=selected_theme.id,
+                language=language,
+                document_text=doc_text,
+                template_id=template_id,
+                with_photos=with_photos,
+                is_paid_user=paid_flag,
+                user_id=user_id,
+                persona_style=persona_style,
+                is_storybook=is_storybook,
+                child_name=child_name,
+                child_avatar_desc=child_avatar_desc,
+            )
+            presentation.design_id = selected_theme.id
+            presentation.persona_style = persona_style
+            presentation.is_storybook = is_storybook
+            presentation.child_name = child_name
+            presentation.child_avatar_desc = child_avatar_desc
 
-    if with_photos:
-        await populate_presentation_images(presentation, image_source=image_source, user_id=user_id)
-    else:
-        presentation.with_photos = False
-        presentation.image_source = "none"
-        for s in presentation.slides:
-            s.image_bytes_b64 = None
+        if with_photos:
+            await populate_presentation_images(presentation, image_source=image_source, user_id=user_id)
+            try:
+                # Save presentation WITH populated images into Redis + SQLite cache (100 users -> 1 generation!)
+                save_cached_presentation(
+                    topic, count, presentation, doc_text=doc_text, language=language, template_id=cache_tmpl_key
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update presentation cache with images: {e}")
+        else:
+            if not from_cache:
+                try:
+                    save_cached_presentation(
+                        topic, count, presentation, doc_text=doc_text, language=language, template_id=cache_tmpl_key
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to save to presentation cache: {e}")
+            presentation.with_photos = False
+            presentation.image_source = "none"
+            for s_item in presentation.slides:
+                s_item.image_bytes_b64 = None
+    finally:
+        inc_metric("active_generations", -1)
+        observe_generation_latency(time.time() - t_start)
 
     pptx_bytes = build_pptx_deck(presentation)
     base_name = re.sub(r"[^a-zA-Z0-9\u0400-\u04FF]", "_", topic)[:40].strip("_") or "presentation"
@@ -453,6 +496,9 @@ def format_admin_dashboard_text() -> Tuple[str, int, int]:
         f"• Тіркелгендер: <b>{stats['total_users']}</b> (Бүгін: {stats['users_today']})\n"
         f"• Презентациялар: <b>{stats['total_generations']}</b> (🖼 Фотомен: {stats.get('photo_generations', 0)} • ⚡ Кэштен: {stats['cached_generations']})\n"
         f"• Выплата сұраныстары: <b>{pend_w_cnt} дана ({pend_w_kzt:,} ₸)</b>\n"
-        f"• Промокодтар: {promo_str}"
+        f"• Промокодтар: {promo_str}\n\n"
+        f"⚡ <b>Prometheus & Кэш Метрикалары:</b>\n"
+        f"• Latency (Орт / p95): <b>{get_prometheus_metrics_snapshot()['latency_avg_sec']}s / {get_prometheus_metrics_snapshot()['latency_p95_sec']}s</b> | Сурет кэші: <b>{get_prometheus_metrics_snapshot()['image_cache_hits_total']} hit</b>\n"
+        f"• 🛡 Анти-фрод Flag-тар: <b>{len(get_flagged_users(50))}</b> | 🤖 Churn тәуекелі (7к): <b>{get_cohort_analysis_stats()['churn_risk_7d_count']}</b> | 💝 Win-back (30к): <b>{get_cohort_analysis_stats()['inactive_30d_count']}</b>"
     )
     return text, pend_w_cnt, pend_p_cnt

@@ -189,6 +189,23 @@ def generate_speaker_defense_text(presentation: PresentationData) -> str:
     tmpl = config.TEMPLATE_LIBRARY.get(presentation.template_id or "standard", config.TEMPLATE_LIBRARY["standard"])
     lines: List[str] = []
 
+    if getattr(presentation, "is_storybook", False) or presentation.template_id == "storybook":
+        hero = getattr(presentation, "child_name", None) or "Жас батыр"
+        if lang == "русский":
+            lines.append(f"📖 ВОЛШЕБНАЯ СКАЗКА: «{presentation.topic}»")
+            lines.append(f"👶 Главный герой: {hero} • Страниц: {len(presentation.slides)}")
+        else:
+            lines.append(f"📖 СИҚЫРЛЫ ЕРТЕГІ КІТАПШАСЫ: «{presentation.topic}»")
+            lines.append(f"👶 Басты кейіпкер: {hero} • Бет саны: {len(presentation.slides)} бет")
+        lines.append("━" * 38)
+        lines.append("")
+        for idx, slide in enumerate(presentation.slides):
+            page_lbl = "СТРАНИЦА" if lang == "русский" else "БЕТ"
+            lines.append(f"✨ {idx + 1}-{page_lbl}: {slide.title}")
+            lines.append(slide.content)
+            lines.append("")
+        return "\n".join(lines)
+
     if lang == "русский":
         lines.append("🎤 РЕЧЬ ДЛЯ ЗАЩИТЫ ПРЕЗЕНТАЦИИ (ШПАРГАЛКА СПИКЕРА)")
         lines.append(f"📌 Тема: «{presentation.topic}»")

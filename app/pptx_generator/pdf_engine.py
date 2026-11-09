@@ -250,11 +250,37 @@ def build_pdf_pillow(presentation: PresentationData) -> bytes:
             if clean_lead:
                 lead_y_px = end_title_y + 8
                 end_lead_y = _draw_wrapped_text(
-                    draw, clean_lead, int(0.68 * S), lead_y_px, int(7.85 * S), int(0.75 * S),
-                    font_body, text_muted_rgb, 23
+                    draw, clean_lead, int(0.68 * S), lead_y_px, int(7.85 * S), int(1.05 * S),
+                    font_body, text_muted_rgb, 22
                 )
-                return max(1.08, min(1.92, (end_lead_y + 18) / S))
+                return max(1.06, min(2.18, (end_lead_y + 16) / S))
             return max(1.06, (end_title_y + 18) / S)
+
+        # 0. CHILDREN'S FULL-PHOTO STORYBOOK SLIDE
+        if (slide_item.type == "storybook_full_photo" or getattr(presentation, "is_storybook", False)) and has_img:
+            try:
+                raw = base64.b64decode(slide_item.image_bytes_b64)
+                with Image.open(io.BytesIO(raw)).convert("RGB") as im:
+                    full_photo = ImageOps.fit(im, (W, H), method=Image.Resampling.LANCZOS)
+                img.paste(full_photo, (0, 0))
+            except Exception:
+                pass
+            draw.rounded_rectangle(
+                [int(0.45 * S), int(3.88 * S), int(9.55 * S), int(5.36 * S)],
+                radius=16, fill=(15, 23, 42), outline=(251, 191, 36), width=3,
+            )
+            end_sb_t = _draw_wrapped_text(
+                draw, f"{idx + 1:02d} • {slide_title}",
+                int(0.72 * S), int(4.02 * S), int(8.56 * S), int(0.42 * S),
+                font_card_title, (251, 191, 36), 24,
+            )
+            _draw_wrapped_text(
+                draw, content_text,
+                int(0.72 * S), end_sb_t + 6, int(8.56 * S), int(5.26 * S) - (end_sb_t + 6),
+                font_body, (248, 250, 252), 22,
+            )
+            images.append(img)
+            continue
 
         # 1. COVER SLIDE
         if idx == 0 or slide_item.type in ("cover", "photo_hero"):
@@ -530,19 +556,27 @@ def build_pdf_pillow(presentation: PresentationData) -> bytes:
             else:
                 draw_card(pos_xl, card_y, col_w, card_h, r=12)
                 if content_text:
+                    draw.text(
+                        (int((pos_xl + 0.24) * S), int((card_y + 0.18) * S)),
+                        "▸ Негізгі аналитикалық мазмұн", font=font_card_title, fill=secondary_rgb,
+                    )
                     _draw_wrapped_text(
                         draw, content_text,
-                        int((pos_xl + 0.26) * S), int((card_y + 0.22) * S),
-                        int((col_w - 0.52) * S), int((card_h - 0.44) * S),
-                        font_body, text_rgb, 23
+                        int((pos_xl + 0.24) * S), int((card_y + 0.46) * S),
+                        int((col_w - 0.48) * S), int((card_h - 0.64) * S),
+                        font_body, text_rgb, 22
                     )
                 draw_card(pos_xr, card_y, col_w, card_h, r=12)
                 if key_points:
+                    draw.text(
+                        (int((pos_xr + 0.24) * S), int((card_y + 0.18) * S)),
+                        "▸ Негізгі дәйектер мен фактілер", font=font_card_title, fill=heading_rgb,
+                    )
                     _draw_bullets(
                         draw, key_points[:4],
-                        int((pos_xr + 0.26) * S), int((card_y + 0.22) * S),
-                        int((col_w - 0.52) * S), int((card_h - 0.44) * S),
-                        font_small, accent_rgb, text_rgb, 22, item_gap=8
+                        int((pos_xr + 0.24) * S), int((card_y + 0.46) * S),
+                        int((col_w - 0.48) * S), int((card_h - 0.64) * S),
+                        font_small, accent_rgb, text_rgb, 21, item_gap=8
                     )
 
         images.append(img)

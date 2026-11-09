@@ -259,9 +259,165 @@ async def test_admin_crud_charts_filters_and_export():
     print("   ✓ Admin Package CRUD, 7d/30d Charts, User Filters, 360° Card, Project Delete & CSV Export passed!")
 
 
+
+
+async def test_v3_caching_antifraud_personas_cohorts_storybook_and_referat():
+    print("5. Testing v3: Image Cache (100->1), Anti-Fraud Lock/Fingerprint, Personas, Cohorts/Churn/30d Win-Back, Kids Storybook (2990₸/2490₸) & Referat Link...")
+    from app.core.db import (
+        get_cached_slide_image,
+        save_cached_slide_image,
+        get_referat_bot_url,
+        set_referat_bot_url,
+        get_user_persona_style,
+        set_user_persona_style,
+        record_user_fingerprint,
+        flag_suspicious_activity,
+        get_flagged_users,
+        clear_user_fraud_flags,
+        get_cohort_analysis_stats,
+        run_ai_churn_and_winback_campaign,
+        get_db_connection,
+    )
+    from app.core.redis_cache import acquire_receipt_lock, release_receipt_lock
+    from app.core.monitoring import get_prometheus_metrics_snapshot, render_prometheus_text
+
+    # 1. Kids Tariffs check (990₸ kids presentation, 1490₸ storybook no photo, 4990₸ storybook with child photo)
+    assert config.TARIFF_PLANS["kids_presentation"]["price_kzt"] == 990
+    assert config.TARIFF_PLANS["kids_storybook"]["price_kzt"] == 1490
+    assert config.TARIFF_PLANS["kids_storybook_photo"]["price_kzt"] == 4990
+
+    # 2. Redis + SQLite Slide Image Cache & 100-users-1-generation cache
+    save_cached_slide_image("quantum computing lab", b"FAKE_JPEG_DATA_" * 60, source="ddg")
+    cached_im = get_cached_slide_image("quantum computing lab", source="ddg")
+    assert cached_im is not None and len(cached_im) > 500
+
+    # 3. Concurrent Receipt Lock (Бірнеше чекті бір уақытта жіберуді блоктау)
+    assert acquire_receipt_lock(5001) is True
+    assert acquire_receipt_lock(5001) is False, "Second concurrent receipt upload MUST be blocked!"
+    release_receipt_lock(5001)
+    assert acquire_receipt_lock(5001) is True
+    release_receipt_lock(5001)
+
+    # 4. Device/Receipt Fingerprinting & Multi-account Fraud Flagging
+    log_user(6001, "user_a", "Асан")
+    log_user(6002, "user_b", "Үсен")
+    fp1 = record_user_fingerprint(6001, lang_code="kk", is_premium=False, receipt_meta="Kaspi_iOS_Device_XYZ")
+    assert fp1["flagged"] is False
+    fp2 = record_user_fingerprint(6002, lang_code="kk", is_premium=False, receipt_meta="Kaspi_iOS_Device_XYZ")
+    assert fp2["flagged"] is True and 6001 in fp2["shared_with_users"]
+    flagged_list = get_flagged_users()
+    assert any(u["user_id"] == 6002 for u in flagged_list)
+    clear_user_fraud_flags(6002)
+
+    # 5. User Course / Specialty Persona Styles (Medical -> Scientific, Business -> Pitch, Teacher -> Pedagogical)
+    assert set_user_persona_style(6001, "medical_science") == "medical_science"
+    assert get_user_persona_style(6001) == "medical_science"
+    assert set_user_persona_style(6001, "business_pitch") == "business_pitch"
+    assert set_user_persona_style(6001, "teacher_pedagogy") == "teacher_pedagogy"
+
+    # 6. Cohort Analysis + AI Churn Prediction (7d -> auto COMEBACK50 promo) + 30-Day Win-back (+3 free presentations)
+    log_user(7007, "churn_student", "Данияр", today_override="2026-10-01")
+    log_user(7030, "winback_student", "Айжан", today_override="2026-09-01")
+    conn = get_db_connection()
+    conn.execute("UPDATE users SET last_streak_date = '2026-10-15', credits = 2 WHERE user_id = 7007")
+    conn.execute("UPDATE users SET last_streak_date = '2026-09-10', credits = 0, bonus_credits = 0 WHERE user_id = 7030")
+    conn.commit()
+    conn.close()
+
+    camp_res = run_ai_churn_and_winback_campaign(today_override="2026-10-25")
+    wb_ids = [x["user_id"] for x in camp_res["winback_30d_awarded"]]
+    ch_ids = [x["user_id"] for x in camp_res["churn_7d_promos"]]
+    assert 7030 in wb_ids, "30-day inactive user must receive +3 free presentations win-back!"
+    assert 7007 in ch_ids, "7-day inactive user with <=3 credits must receive COMEBACK50 churn promo!"
+    assert get_user_credit_breakdown(7030)["bonus"] == 3
+    assert any("Сізді сағындық! 3 тегін презентация сыйлыққа" in x["message"] for x in camp_res["winback_30d_awarded"])
+
+    # 7. Children's Illustrated Full-Photo Storybook (4990₸ with GPT-4o Vision Child Avatar & 1490₸ without photo)
+    from app.core.image_search import analyze_child_photo_gpt4o_vision
+    from PIL import Image
+    import io
+    dummy_img = Image.new("RGB", (300, 300), (120, 160, 220))
+    buf_im = io.BytesIO()
+    dummy_img.save(buf_im, format="JPEG")
+    avatar_desc = await analyze_child_photo_gpt4o_vision(buf_im.getvalue(), user_id=8001)
+    assert "Kazakh" in avatar_desc and "eyes" in avatar_desc
+
+    s_story = get_telegram_session(8001)
+    s_story.isStorybook = True
+    s_story.storybookWithPhoto = True
+    s_story.childName = "Айсұлтан"
+    s_story.childAvatarDesc = avatar_desc
+    s_story.pendingTopic = "Ғарышқа сиқырлы саяхат"
+    s_story.slideCount = 6
+    s_story.withPhotos = True
+    config.DEBUG_MODE = True
+    pptx_sb, fname_sb, pres_sb, _ = await generate_deck_for_session(s_story, user_id=8001, slide_count=6)
+    config.DEBUG_MODE = False
+    assert len(pptx_sb) > 20000
+    assert pres_sb.is_storybook is True and pres_sb.child_name == "Айсұлтан"
+    assert pres_sb.child_avatar_desc == avatar_desc
+    assert all(sl.type == "storybook_full_photo" and sl.image_bytes_b64 and avatar_desc in (sl.image_query or "") and sl.key_points == [] for sl in pres_sb.slides)
+    story_doc_txt = generate_speaker_defense_text(pres_sb)
+    assert "СИҚЫРЛЫ ЕРТЕГІ КІТАПШАСЫ" in story_doc_txt and "комиссия" not in story_doc_txt.lower()
+
+    # 8. Cross-sell Referat Bot URL (Admin-editable) + Prometheus metrics
+    set_referat_bot_url("https://t.me/custom_referat_bot?start=discount20")
+    assert get_referat_bot_url() == "https://t.me/custom_referat_bot?start=discount20"
+    post_kb = build_post_generation_keyboard()
+    all_btns = [btn for row in post_kb["inline_keyboard"] for btn in row]
+    assert any("реферат керек пе? -20% жеңілдік" in b["text"] and b.get("url") == "https://t.me/custom_referat_bot?start=discount20" for b in all_btns)
+
+    prom_txt = render_prometheus_text()
+    snap = get_prometheus_metrics_snapshot()
+    assert "bot_generations_total" in prom_txt and snap["generations_total"] >= 2
+
+    # 9. Test Bilingual UI ('kk' / 'ru') & 3 Strictly Separated Step-by-Step Wizard Tracks
+    from app.bot.handlers.commands import get_language_prompt_message, get_direction_menu_message
+    from app.bot.keyboards.reply import get_persistent_reply_keyboard
+    from app.bot.keyboards.inline import (
+        build_wiz_academic_lang_keyboard,
+        build_wiz_academic_slides_keyboard,
+        build_wiz_academic_photo_keyboard,
+        build_wiz_kids_lang_keyboard,
+        build_wiz_kids_slides_keyboard,
+        build_wiz_storybook_slides_keyboard,
+    )
+
+    l_txt, l_kb = get_language_prompt_message()
+    assert "Қазақша" in str(l_kb) and "Русский" in str(l_kb)
+
+    s_wiz = get_telegram_session(9001)
+    s_wiz.uiLanguage = "kk"
+    dir_txt_kk, dir_kb_kk = get_direction_menu_message(9001)
+    assert "Академиялық презентация" in str(dir_kb_kk) and "Балаларға арналған презентация (990 ₸)" in str(dir_kb_kk) and "Ертегі-презентация (1 490 ₸ / 4 990 ₸ фотомен)" in str(dir_kb_kk)
+    r_kb_kk = get_persistent_reply_keyboard("kk")
+    assert "➕ Жаңа презентация жасау" in str(r_kb_kk)
+
+    s_wiz.uiLanguage = "ru"
+    dir_txt_ru, dir_kb_ru = get_direction_menu_message(9001)
+    assert "Академическая презентация" in str(dir_kb_ru) and "Детская презентация" in str(dir_kb_ru) and "Сказка-презентация" in str(dir_kb_ru)
+    r_kb_ru = get_persistent_reply_keyboard("ru")
+    assert "➕ Создать новую презентацию" in str(r_kb_ru)
+
+    # Verify Academic Wizard steps (Lang -> Slides -> Photo Mode)
+    assert "wiz_acad_lang:қазақша" in str(build_wiz_academic_lang_keyboard("kk"))
+    assert "wiz_acad_slides:15" in str(build_wiz_academic_slides_keyboard("kk"))
+    assert "wiz_acad_gen:none" in str(build_wiz_academic_photo_keyboard("kk"))
+
+    # Verify Kids Presentation Wizard steps (Lang -> ONLY Slides -> Generate)
+    assert "wiz_kids_lang:қазақша" in str(build_wiz_kids_lang_keyboard("kk"))
+    assert "wiz_kids_gen:10" in str(build_wiz_kids_slides_keyboard("kk"))
+
+    # Verify Storybook Wizard step (Child name + topic -> ONLY Slides -> Generate)
+    assert "wiz_story_gen:8" in str(build_wiz_storybook_slides_keyboard("kk"))
+
+    print("   ✓ v3 Image Cache, Anti-Fraud, Personas, Cohorts/Churn/30d Win-Back, Storybook, Referat Link & 3-Track Bilingual Wizard passed!")
+
+
 if __name__ == "__main__":
     test_config_tariffs_and_cleanup()
     asyncio.run(test_templates_gost_and_photo_warning())
     test_three_bucket_credits_and_one_time_promos()
     asyncio.run(test_admin_crud_charts_filters_and_export())
+    asyncio.run(test_v3_caching_antifraud_personas_cohorts_storybook_and_referat())
     print("\n🎉 ALL COMMERCIAL PRO v2 FEATURES PASSED SUCCESSFULLY!")
