@@ -129,7 +129,7 @@ docker-compose up -d --build
 
 **D1darbek**  
 - GitHub: [@dev-d1darbek](https://github.com/dev-d1darbek/)
-- Telegram: [@dev\_d1darbek](https://www.google.com/search?q=https://t.me/dev_d1darbek)
+- Telegram: [@dev\_d1darbek](https://t.me/dev_d1darbek)
 
 ---
 
