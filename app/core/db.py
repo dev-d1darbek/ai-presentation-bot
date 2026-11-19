@@ -151,6 +151,7 @@ def init_db():
         "ALTER TABLE users ADD COLUMN churn_promo_sent INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN winback_30d_sent INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN ui_lang TEXT DEFAULT 'kk'",
+        "ALTER TABLE support_tickets ADD COLUMN sender_role TEXT DEFAULT 'user'",
     ]
     for mig in user_migrations:
         try:
@@ -257,6 +258,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS support_tickets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
+        sender_role TEXT DEFAULT 'user',
         message_text TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -746,6 +748,42 @@ def set_kaspi_pay_url(url: str):
     set_setting("kaspi_pay_url", url.strip())
 
 
+def get_presentation_price_kzt() -> int:
+    saved = get_setting("presentation_price_kzt")
+    if saved and str(saved).strip().isdigit():
+        return max(1, int(str(saved).strip()))
+    return int(config.TARIFF_PLANS.get("single", {}).get("price_kzt", 500))
+
+
+def set_presentation_price_kzt(price_kzt: int) -> int:
+    clean_p = max(1, int(price_kzt))
+    set_setting("presentation_price_kzt", str(clean_p))
+    if "single" in config.TARIFF_PLANS:
+        config.TARIFF_PLANS["single"]["price_kzt"] = clean_p
+    try:
+        prices_raw = get_setting("tariff_prices")
+        prices_map = json.loads(prices_raw) if prices_raw else {}
+        prices_map["single"] = clean_p
+        set_setting("tariff_prices", json.dumps(prices_map))
+    except Exception:
+        pass
+    return clean_p
+
+
+def get_stars_price_xtr() -> int:
+    saved = get_setting("stars_price_xtr")
+    if saved and str(saved).strip().isdigit():
+        return max(1, int(str(saved).strip()))
+    return int(config.STARS_PRICE_XTR)
+
+
+def set_stars_price_xtr(stars: int) -> int:
+    clean_s = max(1, int(stars))
+    set_setting("stars_price_xtr", str(clean_s))
+    config.STARS_PRICE_XTR = clean_s
+    return clean_s
+
+
 def get_disabled_tariff_ids() -> set:
     deleted_raw = get_setting("deleted_tariffs")
     if not deleted_raw:
@@ -1054,7 +1092,7 @@ def log_user(
             except Exception:
                 cur_streak = 1
 
-        bonus_cred = 1 if streak_bonus else 0
+        bonus_cred = 0
         cursor.execute(
             """
             UPDATE users
@@ -1085,7 +1123,7 @@ def log_user(
         if ref_row:
             valid_referrer = referrer_id
 
-    w_cred = config.WELCOME_FREE_CREDITS
+    w_cred = 0
     cursor.execute(
         """
         INSERT INTO users (
@@ -1293,6 +1331,21 @@ def consume_user_credit(user_id: int, with_photos: bool = False, image_source: s
             """,
             (user_id,),
         )
+        if cursor.rowcount > 0:
+            conn.commit()
+            conn.close()
+            return True
+
+        cursor.execute(
+            """
+            UPDATE users
+            SET credits = credits - 1,
+                photo_credits = max(0, photo_credits - 1),
+                no_photo_credits = max(0, no_photo_credits - 1)
+            WHERE user_id = ? AND credits > 0
+            """,
+            (user_id,),
+        )
         ok = cursor.rowcount > 0
         conn.commit()
         conn.close()
@@ -1423,7 +1476,7 @@ def log_support_ticket(user_id: int, message_text: str):
         return
     conn = get_db_connection()
     conn.execute(
-        "INSERT INTO support_tickets (user_id, message_text) VALUES (?, ?)",
+        "INSERT INTO support_tickets (user_id, sender_role, message_text) VALUES (?, 'user', ?)",
         (user_id, (message_text or "").strip()),
     )
     conn.execute(
@@ -1432,6 +1485,57 @@ def log_support_ticket(user_id: int, message_text: str):
     )
     conn.commit()
     conn.close()
+
+
+def log_support_reply(user_id: int, reply_text: str):
+    if not user_id:
+        return
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT INTO support_tickets (user_id, sender_role, message_text) VALUES (?, 'admin', ?)",
+        (user_id, (reply_text or "").strip()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_support_users(limit: int = 12) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    rows = conn.execute(
+        '''
+        SELECT s.user_id,
+               MAX(s.id) AS last_msg_id,
+               MAX(s.created_at) AS last_msg_at,
+               u.username,
+               u.first_name
+        FROM support_tickets s
+        LEFT JOIN users u ON u.user_id = s.user_id
+        GROUP BY s.user_id
+        ORDER BY last_msg_id DESC
+        LIMIT ?
+        ''',
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_support_thread(user_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    rows = conn.execute(
+        '''
+        SELECT id, user_id, coalesce(sender_role, 'user') AS sender_role, message_text, created_at
+        FROM support_tickets
+        WHERE user_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+        ''',
+        (user_id, limit),
+    ).fetchall()
+    conn.close()
+    res = [dict(r) for r in rows]
+    res.reverse()
+    return res
 
 
 def get_user_full_history(user_id: int) -> Dict[str, Any]:
@@ -2663,11 +2767,14 @@ def run_ai_churn_and_winback_campaign(today_override: Optional[str] = None) -> D
 def get_user_ui_lang(user_id: int) -> str:
     prof = get_user_profile(user_id)
     val = (prof.get("ui_lang") or "kk").lower().strip()
-    return "ru" if val == "ru" else "kk"
+    if val in ("ru", "en"):
+        return val
+    return "kk"
 
 
 def set_user_ui_lang(user_id: int, ui_lang: str) -> str:
-    clean = "ru" if str(ui_lang).lower().strip() == "ru" else "kk"
+    val = str(ui_lang).lower().strip()
+    clean = val if val in ("kk", "ru", "en") else "kk"
     conn = get_db_connection()
     conn.execute("UPDATE users SET ui_lang = ? WHERE user_id = ?", (clean, user_id))
     conn.commit()

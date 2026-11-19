@@ -417,20 +417,18 @@ def format_user_admin_card(user_id_or_profile: Any) -> Tuple[str, List[Dict[str,
     if not proj_lines:
         proj_lines = "  (Әзірге жоба жасамаған)\n"
 
+    paid_cnt = max(0, b['total'] - b['bonus'])
     text = (
-        f"👤 <b>360° ҚОЛДАНУШЫ ТАРИХЫ (КАРТОЧКА)</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 ID: <code>{uid}</code> | 📛 <b>{fname}</b> ({uname})\n"
-        f"📅 Тіркелген уақыты: <code>{reg_date}</code> (Соңғы: <code>{last_act}</code>)\n"
-        f"💳 Жалпы төлеген сомасы: <b>{hist['total_paid_kzt']:,} ₸</b> ({hist['payments_count']} төлем)\n"
-        f"📩 Шағымдар / Хабарламалар саны: <b>{hist['complaints_count']} рет</b>\n\n"
-        f"🎫 <b>Баланс (Барлығы: {b['total']} през):</b>\n"
-        f"  • 🎁 Бонус: <b>{b['bonus']}</b> | 📄 Фотосыз: <b>{b['no_photo']}</b>\n"
-        f"  • 🖼 Фото (DDG): <b>{b['ddg_photo']}</b> | ✨ OpenAI: <b>{b['openai_photo']}</b>\n\n"
-        f"👥 <b>Реферал:</b> {prof.get('invited_count', 0)} дос • Сауда: {prof.get('referral_sales_kzt', 0):,} ₸ • Баланс: {prof.get('partner_balance_kzt', 0):,} ₸\n\n"
+        f"👤 <b>ҚОЛДАНУШЫ ПРОФИЛІ</b>\n\n"
+        f"🆔 ID: <code>{uid}</code> • 📛 <b>{fname}</b> ({uname})\n"
+        f"📅 Тіркелген: <code>{reg_date}</code> • Соңғы: <code>{last_act}</code>\n"
+        f"💳 Төлемдері: <b>{hist['total_paid_kzt']:,} ₸</b> ({hist['payments_count']} рет)\n"
+        f"📩 Хабарламалар: <b>{hist['complaints_count']}</b>\n\n"
+        f"🎫 <b>Баланс: {b['total']} презентация</b>\n"
+        f"   • 🎁 Бонус: <b>{b['bonus']}</b> | 💎 Негізгі: <b>{paid_cnt}</b>\n\n"
         f"📂 <b>Жасаған жобалары ({len(projects)}):</b>\n"
         f"{proj_lines}\n"
-        f"👇 Төмендегі батырмалармен баланс қосуға, хат жазуға немесе кез келген жобасын өшіруге болады:"
+        f"👇 Басқару батырмалары:"
     )
     return text, projects
 
@@ -479,7 +477,7 @@ def format_admin_dashboard_text() -> Tuple[str, int, int]:
     pend_p_cnt = stats.get("pending_payments_count", 0)
 
     text = (
-        "📊 <b>AI PRESENTATION BOT PRO v2 — АДМИН ПАНЕЛЬ</b>\n"
+        "⚙️ <b>SLIDEAI KZ — АДМИН ПАНЕЛЬ</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"{alerts_str}\n\n"
         "💰 <b>Қаржы және Сатылым:</b>\n"

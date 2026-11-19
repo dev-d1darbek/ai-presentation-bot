@@ -3,6 +3,7 @@ Command & Menu Message Builders for AI Presentation Bot (Commercial Pro v2 Editi
 """
 from typing import Dict, Any, Tuple, Optional
 import config
+from app.bot.i18n import t as i18n_t, norm_lang
 from app.core.themes import get_selected_theme_label
 from app.core.db import (
     get_user_profile,
@@ -12,6 +13,8 @@ from app.core.db import (
     get_seller_setting,
     get_user_active_promo,
     get_enabled_generation_modes,
+    get_presentation_price_kzt,
+    get_stars_price_xtr,
 )
 from app.bot.session import get_telegram_session
 from app.bot.keyboards.reply import get_persistent_reply_keyboard
@@ -23,6 +26,7 @@ from app.bot.keyboards.inline import (
     build_payment_instruction_keyboard,
     build_referral_keyboard,
     build_support_contact_keyboard,
+    build_balance_keyboard,
     build_admin_kaspi_settings_keyboard,
     build_admin_price_editor_keyboard,
     build_admin_gen_modes_keyboard,
@@ -40,7 +44,7 @@ def get_start_message(chat_id: int, is_new: bool = False, streak_days: int = 1, 
 
     bonus_banner = (
         f"🎁 <b>Сізге тіркелгеніңіз үшін {config.WELCOME_FREE_CREDITS} ТЕГІН презентация («Бір реттік» немесе «Бір реттік + ФОТО» үшін) берілді!</b>\n\n"
-        if is_new
+        if is_new and config.WELCOME_FREE_CREDITS > 0
         else ""
     )
 
@@ -193,40 +197,27 @@ def get_admin_kaspi_settings_message() -> Tuple[str, Dict[str, Any]]:
 
 
 def get_admin_price_editor_message() -> Tuple[str, Dict[str, Any]]:
-    tariffs = get_dynamic_tariffs(include_disabled=True)
-    lines = [
-        "💰 <b>ТАРИФТІК ПАКЕТТЕРДІ БАСҚАРУ (ҚОСУ / ӨЗГЕРТУ / ӨШІРУ)</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "💡 <i>Кез келген пакетті «🔴 Өшіру» батырмасымен уақытша өшіріп, қалаған кезде «🟢 Қайта қосу» арқылы қайта қоса аласыз!</i>\n"
-    ]
-    for idx, (k, t) in enumerate(tariffs.items(), 1):
-        np_c = int(t.get("no_photo_credits", 0))
-        ddg_c = int(t.get("ddg_photo_credits", 0))
-        oai_c = int(t.get("openai_photo_credits", 0))
-        is_en = t.get("is_enabled", True)
-        st_lbl = "🟢 ҚОСУЛЫ" if is_en else "🔴 ӨШІРУЛІ (Клиенттерге көрінбейді)"
-        lines.append(
-            f"{idx}. <b>{t['title']}</b> — <b>{t['price_kzt']:,} ₸</b> [{st_lbl}]\n"
-            f"   Барлығы: {t['credits']} през ({np_c} фотосыз / {ddg_c} фотомен / {oai_c} OpenAI)"
-        )
-    lines.append("\n👇 Пакет бағасын өзгертіңіз, жаңа пакет қосыңыз немесе пакетті өшіріп/қосыңыз:")
-    return "\n".join(lines), build_admin_price_editor_keyboard()
+    price_kzt = get_presentation_price_kzt()
+    stars_xtr = get_stars_price_xtr()
+    text = (
+        "💰 <b>БАҒАЛАРДЫ БАСҚАРУ (₸ / ⭐️ STARS)</b>\n\n"
+        f"📄 <b>1 презентация бағасы (Фотосыз / Фотомен):</b> <b>{price_kzt:,} ₸</b>\n"
+        f"⭐️ <b>Telegram Stars бағасы:</b> <b>{stars_xtr} ⭐️</b>\n\n"
+        "💡 <i>Бағаны өзгертсеңіз, ол бүкіл ботта (Баланс, Kaspi Pay, Stars төлемі) бірден жаңарады!</i>"
+    )
+    return text, build_admin_price_editor_keyboard()
 
 
 def get_admin_gen_modes_message() -> Tuple[str, Dict[str, Any]]:
     modes = get_enabled_generation_modes()
     m_none = modes.get("none", True)
     m_ddg = modes.get("ddg", True)
-    m_oai = modes.get("gpt-image-2", True)
 
     lines = [
-        "🎛 <b>3 ПРЕЗЕНТАЦИЯ ТҮРІН БАСҚАРУ (ҚОСУ / ӨШІРУ)</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "Қолданушыларға презентация жасаудың қай түрлері қолжетімді болатынын осы жерден басқара аласыз:\n\n"
-        f"1️⃣ <b>🚫 Фотосыз («Бір реттік»):</b> {'🟢 ҚОСУЛЫ' if m_none else '🔴 ӨШІРУЛІ'}\n"
-        f"2️⃣ <b>🖼 Фотомен (Интернет/ЖИ):</b> {'🟢 ҚОСУЛЫ' if m_ddg else '🔴 ӨШІРУЛІ'}\n"
-        f"3️⃣ <b>✨ OpenAI Фотомен (gpt-image-2):</b> {'🟢 ҚОСУЛЫ' if m_oai else '🔴 ӨШІРУЛІ'}\n\n"
-        "💡 <i>Мысалы: «📄 Тек Фотосыз қалдыру» батырмасын бассаңыз, фотомен жасау түрлері өшіріліп, тек фотосыз презентация жасау қалады. Ал «🔄 Барлық 3 түрді қосу» арқылы бәрін қайта қоса аласыз!</i>"
+        "🎛 <b>2 ПРЕЗЕНТАЦИЯ ТҮРІН БАСҚАРУ (ҚОСУ / ӨШІРУ)</b>\n\n"
+        f"1️⃣ <b>🚫 Фотосыз:</b> {'🟢 ҚОСУЛЫ' if m_none else '🔴 ӨШІРУЛІ'}\n"
+        f"2️⃣ <b>🖼 Фотомен:</b> {'🟢 ҚОСУЛЫ' if m_ddg else '🔴 ӨШІРУЛІ'}\n\n"
+        "💡 <i>Кез келген режимді уақытша өшіріп немесе қайта қоса аласыз.</i>"
     ]
     return "\n".join(lines), build_admin_gen_modes_keyboard()
 
@@ -263,22 +254,18 @@ def get_referral_message(user_id: int, bot_username: str) -> Tuple[str, Dict[str
     return text, build_referral_keyboard(ref_link, partner_bal)
 
 
-def get_support_message(user_id: int) -> Tuple[str, Dict[str, Any]]:
-    adm_line = ""
-    if config.ADMIN_CONTACT:
-        clean_adm = config.ADMIN_CONTACT.lstrip("@").replace("https://t.me/", "").strip()
-        if clean_adm:
-            adm_line = f"📱 Тікелей байланыс: @{clean_adm}\n"
+def get_balance_message(user_id: int, ui_lang: str = "kk") -> Tuple[str, Dict[str, Any]]:
+    l = norm_lang(ui_lang)
+    b = get_user_credit_breakdown(user_id)
+    text = i18n_t("balance_screen", l, total=b["total"], price=get_presentation_price_kzt(), stars=get_stars_price_xtr())
+    return text, build_balance_keyboard(l)
 
-    text = (
-        f"👨‍💻 <b>АДМИНМЕН БАЙЛАНЫС ЖӘНЕ ҚОЛДАУ</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"Сұрағыңыз, университет серіктестігі, промокод немесе төлем бойынша мәселе туындаса, "
-        f"бізге кез келген уақытта жаза аласыз!\n\n"
-        f"{adm_line}"
-        f"🆔 Сіздің Telegram ID-іңіз: <code>{user_id}</code>"
-    )
-    return text, build_support_contact_keyboard()
+
+def get_support_message(user_id: int, ui_lang: str = "kk") -> Tuple[str, Dict[str, Any]]:
+    l = norm_lang(ui_lang)
+    clean_adm = (config.ADMIN_CONTACT or "dev_d1darbek").lstrip("@").replace("https://t.me/", "").strip()
+    text = i18n_t("support_screen", l, admin_user=clean_adm, user_id=user_id)
+    return text, build_support_contact_keyboard(l)
 
 
 def get_help_message() -> Tuple[str, Dict[str, Any]]:
@@ -336,11 +323,10 @@ def get_persona_styles_message(chat_id: int, mode: str = "default") -> Tuple[str
     return text, build_persona_styles_keyboard(session, mode=mode)
 
 def get_language_prompt_message() -> Tuple[str, Dict[str, Any]]:
-    """Shown on /start: asks the user to choose the bot interface language (Қазақша or Русский)."""
+    """Shown on /start: asks the user to choose the bot interface language (kk / ru / en)."""
     text = (
-        "👋 <b>Қош келдіңіз! / Добро пожаловать!</b>\n\n"
-        "🇰🇿 Боттың тілін таңдаңыз:\n"
-        "🇷🇺 Выберите язык интерфейса бота:"
+        "👋 <b>Қош келдіңіз!</b>\n"
+        "🌐 Боттың тілін таңдаңыз:"
     )
     return text, build_ui_language_keyboard()
 
@@ -351,57 +337,13 @@ def get_direction_menu_message(
     streak_days: int = 1,
     streak_bonus: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
-    """
-    Shown right after language selection (or when clicking '➕ Жаңа презентация жасау'):
-    Asks the user to choose one of the 3 strictly separated presentation directions.
-    """
+    """Shown right after language selection or 'Жаңа презентация жасау'."""
     session = get_telegram_session(chat_id)
-    ui_lang = getattr(session, "uiLanguage", "kk")
+    l = norm_lang(getattr(session, "uiLanguage", "kk"))
     b = get_user_credit_breakdown(chat_id)
-
-    if str(ui_lang).lower().strip() == "ru":
-        bonus_banner = (
-            f"🎁 <b>За регистрацию вам начислена {config.WELCOME_FREE_CREDITS} БЕСПЛАТНАЯ презентация!</b>\n\n"
-            if is_new
-            else ""
-        )
-        streak_banner = (
-            f"🔥 <b>За вход 3 дня подряд вам начислена +1 БЕСПЛАТНАЯ презентация!</b> (Стрик: {streak_days} дн.)\n\n"
-            if streak_bonus
-            else f"🔥 Ежедневный стрик: <b>{streak_days} дн.</b> (3 дня подряд → +1 бесплатная презентация)\n"
-        )
-        text = (
-            f"🤖 <b>AI Presentation Bot Pro</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{bonus_banner}"
-            f"🎫 <b>Ваш баланс: {b['total']} през.</b> (🎁 Бонус: {b['bonus']} | 📄 Без фото: {b['no_photo']} | 🖼 Фото: {b['ddg_photo']} | ✨ OpenAI: {b['openai_photo']})\n"
-            f"{streak_banner}\n"
-            f"👇 <b>Выберите направление презентации:</b>\n"
-            f"1️⃣ <b>🎓 Академическая презентация:</b> Тема → Язык → Кол-во слайдов → С фото / Без фото.\n"
-            f"2️⃣ <b>🧸 Детская презентация (990 ₸):</b> Тема → Язык → Кол-во слайдов.\n"
-            f"3️⃣ <b>🧚 Сказка-презентация (1 490 ₸ без фото / 4 990 ₸ с фото ребенка):</b> Имя ребенка + тема → Кол-во страниц."
-        )
-        return text, build_direction_selection_keyboard("ru")
-
-    bonus_banner = (
-        f"🎁 <b>Сізге тіркелгеніңіз үшін {config.WELCOME_FREE_CREDITS} ТЕГІН презентация берілді!</b>\n\n"
-        if is_new
-        else ""
-    )
-    streak_banner = (
-        f"🔥 <b>3 күн қатарынан кіргеніңіз үшін +1 ТЕГІН презентация қосылды!</b> (Стрик: {streak_days} күн)\n\n"
-        if streak_bonus
-        else f"🔥 Күнделікті стрик: <b>{streak_days} күн</b> (3 күн қатарынан кірсеңіз → +1 тегін презентация)\n"
-    )
     text = (
-        f"🤖 <b>AI Presentation Bot Pro</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"{bonus_banner}"
-        f"🎫 <b>Сіздің балансыңыз: {b['total']} през</b> (🎁 Бонус: {b['bonus']} | 📄 Фотосыз: {b['no_photo']} | 🖼 Фото: {b['ddg_photo']} | ✨ OpenAI: {b['openai_photo']})\n"
-        f"{streak_banner}\n"
-        f"👇 <b>Презентацияның бағытын таңдаңыз:</b>\n"
-        f"1️⃣ <b>🎓 Академиялық презентация:</b> Тақырып → Презентация тілі → Бет саны → Фотомен / Фотосыз.\n"
-        f"2️⃣ <b>🧸 Балаларға арналған презентация (990 ₸):</b> Тақырып → Презентация тілі → Бет саны.\n"
-        f"3️⃣ <b>🧚 Ертегі-презентация (1 490 ₸ фотосыз / 4 990 ₸ бала фотосымен):</b> Баланың аты мен тақырып → Бет саны."
+        f"{i18n_t('bot_brand', l)}\n\n"
+        f"{i18n_t('balance_line', l, total=b['total'])}\n"
+        f"{i18n_t('choose_dir', l)}"
     )
-    return text, build_direction_selection_keyboard("kk")
+    return text, build_direction_selection_keyboard(l)

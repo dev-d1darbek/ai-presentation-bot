@@ -24,7 +24,7 @@ import io
 import logging
 import re
 import time
-from typing import Optional
+from typing import Optional, Dict, List
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
@@ -39,6 +39,8 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
     BotCommand,
+    LabeledPrice,
+    PreCheckoutQuery,
 )
 from aiogram.filters import CommandStart, Command
 from aiogram.client.default import DefaultBotProperties
@@ -47,6 +49,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 import config
+from app.bot.i18n import t as i18n_t, norm_lang, get_dir_title, DIRECTIONS
 from config import is_admin
 from app.core.themes import detect_best_theme_for_topic, THEMES_REGISTRY, get_selected_theme_label
 from app.core.db import (
@@ -103,6 +106,13 @@ from app.core.db import (
     get_user_active_promo,
     get_ai_cost_stats,
     log_support_ticket,
+    log_support_reply,
+    get_support_users,
+    get_support_thread,
+    get_presentation_price_kzt,
+    set_presentation_price_kzt,
+    get_stars_price_xtr,
+    set_stars_price_xtr,
     export_database_zip_bytes,
     track_funnel_event,
 )
@@ -128,10 +138,6 @@ from app.bot.keyboards.inline import (
     build_wiz_academic_lang_keyboard,
     build_wiz_academic_slides_keyboard,
     build_wiz_academic_photo_keyboard,
-    build_wiz_kids_lang_keyboard,
-    build_wiz_kids_slides_keyboard,
-    build_wiz_storybook_slides_keyboard,
-    build_wiz_storybook_mode_keyboard,
     build_clean_themes_keyboard,
     build_default_slides_keyboard,
     build_post_generation_keyboard,
@@ -147,6 +153,8 @@ from app.bot.keyboards.inline import (
     build_admin_price_editor_keyboard,
     build_admin_user_manage_keyboard,
     build_admin_reply_user_keyboard,
+    build_admin_support_inbox_keyboard,
+    build_support_contact_keyboard,
 )
 from app.bot.service import (
     parse_user_input,
@@ -167,6 +175,7 @@ from app.bot.handlers.commands import (
     get_admin_price_editor_message,
     get_admin_gen_modes_message,
     get_referral_message,
+    get_balance_message,
     get_support_message,
     get_help_message,
     get_slides_message,
@@ -210,6 +219,8 @@ class BotStates(StatesGroup):
     waiting_for_admin_user_search = State()
     waiting_for_kaspi_pay_url = State()
     waiting_for_tariff_price = State()
+    waiting_for_pres_price_kzt = State()
+    waiting_for_stars_price_xtr = State()
     waiting_for_new_package = State()
     waiting_for_promo_code = State()
     waiting_for_admin_new_promo = State()
@@ -218,6 +229,44 @@ class BotStates(StatesGroup):
     waiting_for_referat_bot_url = State()
     wiz_academic_topic = State()
     wiz_kids_pres_topic = State()
+
+
+
+# ----------------- Auto Chat Cleanup (Ескі хаттарды тазалау) -----------------
+_chat_cleanup_ids: Dict[int, List[int]] = {}
+
+
+def track_cleanup_msg(chat_id: int, msg_id: Optional[int]):
+    if not msg_id:
+        return
+    lst = _chat_cleanup_ids.setdefault(chat_id, [])
+    if msg_id not in lst:
+        lst.append(msg_id)
+    if len(lst) > 15:
+        _chat_cleanup_ids[chat_id] = lst[-15:]
+
+
+async def cleanup_prev_messages(bot: Bot, chat_id: int, user_msg_id: Optional[int] = None):
+    """Deletes previous transient bot menu/wizard messages to keep chat clean."""
+    ids = _chat_cleanup_ids.pop(chat_id, [])
+    for mid in ids:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=mid)
+        except Exception:
+            pass
+    if user_msg_id:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=user_msg_id)
+        except Exception:
+            pass
+
+
+async def send_clean(bot: Bot, chat_id: int, text: str, reply_markup=None, user_msg_id: Optional[int] = None):
+    """Cleans previous transient bot messages and sends a fresh one, tracking its ID."""
+    await cleanup_prev_messages(bot, chat_id, user_msg_id=user_msg_id)
+    sent = await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+    track_cleanup_msg(chat_id, sent.message_id)
+    return sent
 
 
 def dict_to_inline_markup(d: dict) -> InlineKeyboardMarkup:
@@ -313,41 +362,16 @@ async def send_all_three_presentation_files(
     from_cache: bool = False,
 ):
     """
-    Бірден 3 дайын файлды жібереді:
-    1. .PPTX презентация
-    2. .PDF телефонда көру үшін
-    3. .DOCX Қорғау сөзі (Шпаргалка)
-    Астында ТЕК «🎨 Дизайнын ауыстыру» және «📄 Бет санын өзгерту» батырмалары тұрады!
+    Бірден .PDF (телефонда көру үшін) және .PPTX (негізгі презентация) жібереді,
+    астында 3 батырма: Дизайн ауыстыру, Жаңа презентация жасау, Менің жобаларым.
     """
     pres = session.lastPresentation
     topic = pres.topic if pres else (session.pendingTopic or "Презентация")
     slide_cnt = pres.slide_count if pres else session.slideCount
-    if pres and pres.with_photos:
-        photo_badge = "✨ OpenAI Фото" if pres.image_source == "gpt-image-2" else "🖼 Фотомен (Интернет/ЖИ)"
-    else:
-        photo_badge = "🚫 Фотосыз (Минимализм)"
-    speed_badge = "⚡ <i>Жылдам кэштен лезде дайындалды</i>\n" if from_cache else ""
-    ddg_notice = (
-        f"\n{config.DDG_PHOTO_WARNING_TEXT}\n"
-        if (pres and pres.with_photos and pres.image_source != "gpt-image-2")
-        else ""
-    )
+    l = norm_lang(getattr(session, "uiLanguage", "kk"))
+    photo_badge = i18n_t("photo_badge_with", l) if (pres and pres.with_photos) else i18n_t("photo_badge_none", l)
 
-    # 1. Send .PPTX
-    pptx_doc = BufferedInputFile(pptx_bytes, filename=pptx_filename)
-    await bot.send_document(
-        chat_id=chat_id,
-        document=pptx_doc,
-        caption=(
-            f"📊 <b>1/3 • Негізгі презентация (.PPTX)</b>\n"
-            f"{speed_badge}"
-            f"📌 Тақырып: <b>{topic}</b>\n"
-            f"📄 Көлемі: {slide_cnt} слайд • {photo_badge}\n"
-            f"🎨 Дизайн: {theme_name_kz}{ddg_notice}"
-        ),
-    )
-
-    # 2. Send .PDF
+    # 1. Send .PDF
     pdf_res = build_pdf_for_session(session, pptx_bytes=None)
     if pdf_res:
         pdf_bytes, pdf_filename = pdf_res
@@ -355,24 +379,24 @@ async def send_all_three_presentation_files(
         await bot.send_document(
             chat_id=chat_id,
             document=pdf_doc,
-            caption=f"📱 <b>2/3 • Телефонда ашып көруге арналған нұсқа (.PDF)</b>\n📌 «{topic}» ({slide_cnt} бет)",
+            caption=i18n_t("pdf_caption", l),
         )
 
-    # 3. Send .DOCX + ONLY 2 buttons underneath!
-    speech_res = build_speech_for_session(session)
-    if speech_res:
-        _full_text, docx_bytes, docx_filename = speech_res
-        docx_doc = BufferedInputFile(docx_bytes, filename=docx_filename)
-        await bot.send_document(
-            chat_id=chat_id,
-            document=docx_doc,
-            caption=(
-                f"🎤 <b>3/3 • Спикерге арналған Қорғау сөзі / Шпаргалка (.DOCX)</b>\n"
-                f"🎫 Қалған жалпы лимит: <b>{rem_credits} презентация</b>\n\n"
-                f"👇 Дизайнын немесе бет санын өзгерту:"
-            ),
-            reply_markup=dict_to_inline_markup(build_post_generation_keyboard(ui_lang=getattr(session, 'uiLanguage', 'kk'))),
-        )
+    # 2. Send .PPTX with 3 clean buttons underneath
+    pptx_doc = BufferedInputFile(pptx_bytes, filename=pptx_filename)
+    await bot.send_document(
+        chat_id=chat_id,
+        document=pptx_doc,
+        caption=i18n_t(
+            "pptx_caption",
+            l,
+            topic=topic,
+            count=slide_cnt,
+            photo_badge=photo_badge,
+            theme=theme_name_kz,
+        ),
+        reply_markup=dict_to_inline_markup(build_post_generation_keyboard(ui_lang=l)),
+    )
 
 
 async def execute_generation(
@@ -402,58 +426,21 @@ async def execute_generation(
     # - OpenAI gpt-image-2 тек VIP/Pro/Хит/500₸ пакетін алғандарға (openai_photo_credits > 0) рұқсат етіледі!
     if not admin_flag:
         if not consume_user_credit(uid, with_photos=wants_photos, image_source=img_src):
-            b = get_user_credit_breakdown(uid)
-            t_text, t_kb = get_tariffs_message(uid)
-            if wants_photos and img_src == "gpt-image-2" and (b["bonus"] + b["ddg_photo"] + b["no_photo"]) > 0:
-                t_kb_rows = [
-                    [{"text": "🖼 «Бір реттік + ФОТО» (Интернет/ЖИ) режимімен жасау", "callback_data": f"gen_ddg_now:{slide_count or session.slideCount}"}],
-                    [{"text": "🚫 «Бір реттік» (Фотосыз) режимімен жасау", "callback_data": f"gen_nophoto_now:{slide_count or session.slideCount}"}],
-                ] + t_kb.get("inline_keyboard", [])
-                msg = (
-                    "✨ <b>OpenAI (<code>gpt-image-2</code>) фотогенерациясы — тек VIP / Pro / Хит немесе 500 ₸ OpenAI пакетінде қолжетімді!</b>\n\n"
-                    f"💡 Сізде қазір <b>{b['bonus'] + b['ddg_photo'] + b['no_photo']} презентация</b> лимиті бар (Тегін бонус тек «Бір реттік» және «Бір реттік + ФОТО» үшін жарайды).\n"
-                    "• Төмендегі батырмамен <b>«Бір реттік + ФОТО»</b> немесе <b>«Фотосыз»</b> режимінде дәл қазір жасай аласыз;\n"
-                    "• Немесе OpenAI фотосы бар пакетті таңдаңыз:\n\n" + t_text
-                )
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=msg,
-                    reply_markup=dict_to_inline_markup({"inline_keyboard": t_kb_rows}),
-                )
-                return
-
-            if wants_photos and b["no_photo"] > 0 and b["ddg_photo"] == 0 and b["bonus"] == 0:
-                t_kb_rows = [
-                    [{"text": "🚫 Фотосыз лимитпен жасау", "callback_data": f"gen_nophoto_now:{slide_count or session.slideCount}"}],
-                ] + t_kb.get("inline_keyboard", [])
-                msg = (
-                    f"⚠️ <b>Сізде фотомен жасау лимиті қалмады, бірақ {b['no_photo']} фотосыз презентация бар!</b>\n\n"
-                    "Төмендегі батырмамен фотосыз жасаңыз немесе фото-пакет алыңыз:\n\n" + t_text
-                )
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=msg,
-                    reply_markup=dict_to_inline_markup({"inline_keyboard": t_kb_rows}),
-                )
-                return
-
-            msg = (
-                "⚠️ <b>Балансыңызда презентация қалмады (0).</b>\n\n"
-                "Жаңа презентация үшін пакет таңдаңыз немесе "
-                "<b>2 дос шақырып +1 тегін презентация</b> алыңыз!\n\n" + t_text
-            )
+            l = norm_lang(getattr(session, "uiLanguage", "kk"))
+            b_text, b_kb = get_balance_message(uid, ui_lang=l)
+            msg = f"{i18n_t('not_enough_credits', l)}\n\n{b_text}"
             if existing_msg_id:
                 try:
                     await bot.edit_message_text(
                         text=msg,
                         chat_id=chat_id,
                         message_id=existing_msg_id,
-                        reply_markup=dict_to_inline_markup(t_kb),
+                        reply_markup=dict_to_inline_markup(b_kb),
                     )
                     return
                 except Exception:
                     pass
-            await bot.send_message(chat_id=chat_id, text=msg, reply_markup=dict_to_inline_markup(t_kb))
+            await bot.send_message(chat_id=chat_id, text=msg, reply_markup=dict_to_inline_markup(b_kb))
             return
 
     topic = session.pendingTopic or (
@@ -468,12 +455,11 @@ async def execute_generation(
 
     track_funnel_event(uid, "generation_started", {"topic": topic, "slides": count, "with_photos": wants_photos})
 
-    ddg_warn_line = f"\n\n{config.DDG_PHOTO_WARNING_TEXT}" if (wants_photos and img_src == "ddg") else ""
     status_text = (
         f"⏳ <b>«{topic}» дайындалуда...</b>\n\n"
         f"<code>[▓░░░░░░░░░]</code> <b>10%</b>\n"
         f"🧠 Тақырып талданып, презентация құрылымы құрылуда...\n\n"
-        f"📄 Көлемі: {count} слайд • 🎨 {selected_theme.nameKz}{ddg_warn_line}"
+        f"📄 Көлемі: {count} слайд • 🎨 {selected_theme.nameKz}"
     )
 
     status_msg_id = None
@@ -506,6 +492,11 @@ async def execute_generation(
         save_session(chat_id, session)
         rem_credits = get_user_credits(uid)
 
+        if status_msg_id:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=status_msg_id)
+            except Exception:
+                pass
         await send_all_three_presentation_files(
             bot=bot,
             chat_id=chat_id,
@@ -647,36 +638,43 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
         return
 
     lang_prompt_text, lang_prompt_kb = get_language_prompt_message()
-    await message.answer(lang_prompt_text, reply_markup=dict_to_inline_markup(lang_prompt_kb))
+    await send_clean(bot, message.chat.id, lang_prompt_text, reply_markup=dict_to_inline_markup(lang_prompt_kb), user_msg_id=message.message_id)
 
 
 
 
+@router.message(Command("jana"))
 @router.message(Command("new"))
-@router.message(F.text.in_({"➕ Жаңа презентация жасау", "➕ Создать новую презентацию"}))
-async def cmd_new_presentation(message: Message, state: FSMContext):
+@router.message(F.text.in_({
+    "✨ Жаңа презентация жасау", "✨ Создать новую презентацию", "✨ Create New Presentation",
+    "Жаңа презентация жасау", "Создать новую презентацию", "Create New Presentation",
+    "➕ Жаңа презентация жасау", "➕ Создать новую презентацию",
+}))
+async def cmd_new_presentation(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     text, kb = get_direction_menu_message(message.chat.id)
-    await message.answer(text, reply_markup=dict_to_inline_markup(kb))
+    await send_clean(bot, message.chat.id, text, reply_markup=dict_to_inline_markup(kb), user_msg_id=message.message_id)
 
 
+@router.message(Command("til"))
 @router.message(Command("lang"))
-@router.message(F.text.in_({"🌐 Тіл / Язык", "🌐 Язык", "🌐 Тіл"}))
-async def cmd_change_ui_lang(message: Message, state: FSMContext):
+@router.message(F.text.in_({"🌐 Тіл / Язык", "🌐 Язык / Тіл", "🌐 Language", "Тіл / Язык", "Language", "🌐 Язык", "🌐 Тіл"}))
+async def cmd_change_ui_lang(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     text, kb = get_language_prompt_message()
-    await message.answer(text, reply_markup=dict_to_inline_markup(kb))
+    await send_clean(bot, message.chat.id, text, reply_markup=dict_to_inline_markup(kb), user_msg_id=message.message_id)
 
 
 @router.message(BotStates.wiz_academic_topic)
 async def process_wiz_academic_topic(message: Message, state: FSMContext):
     await state.clear()
     raw = (message.text or "").strip()
+    session = get_telegram_session(message.chat.id)
+    l = norm_lang(getattr(session, "uiLanguage", "kk"))
     if len(raw) < 2:
-        await message.answer("⚠️ Тақырыпты жазыңыз / Напишите тему.")
+        await message.answer(i18n_t("topic_too_short", l))
         return
     clean_topic, inline_count, theme_mention = parse_user_input(raw)
-    session = get_telegram_session(message.chat.id)
     session.flowType = "academic"
     session.isStorybook = False
     session.pendingTopic = clean_topic
@@ -687,57 +685,9 @@ async def process_wiz_academic_topic(message: Message, state: FSMContext):
         session.designId = theme_mention
     save_session(message.chat.id, session)
 
-    ui_lang = getattr(session, "uiLanguage", "kk")
-    if ui_lang == "ru":
-        txt = (
-            f"🎓 <b>Академическая презентация</b>\n"
-            f"📌 Тема: <b>«{clean_topic}»</b>\n\n"
-            f"🌐 <b>Шаг 2: На каком языке создать презентацию?</b>"
-        )
-    else:
-        txt = (
-            f"🎓 <b>Академиялық презентация</b>\n"
-            f"📌 Тақырып: <b>«{clean_topic}»</b>\n\n"
-            f"🌐 <b>2-қадам: Презентация қай тілде жасалсын?</b>"
-        )
-    await message.answer(txt, reply_markup=dict_to_inline_markup(build_wiz_academic_lang_keyboard(ui_lang)))
-
-
-@router.message(BotStates.wiz_kids_pres_topic)
-async def process_wiz_kids_topic(message: Message, state: FSMContext):
-    await state.clear()
-    raw = (message.text or "").strip()
-    if len(raw) < 2:
-        await message.answer("⚠️ Тақырыпты жазыңыз / Напишите тему.")
-        return
-    clean_topic, inline_count, _ = parse_user_input(raw)
-    session = get_telegram_session(message.chat.id)
-    session.flowType = "kids_presentation"
-    session.isStorybook = False
-    session.templateId = "kids_edu"
-    session.personaStyle = "kids_fairy"
-    session.withPhotos = True
-    session.imageSource = "gpt-image-2"
-    session.pendingTopic = clean_topic
-    session.pendingDocumentText = None
-    if inline_count:
-        session.slideCount = inline_count
-    save_session(message.chat.id, session)
-
-    ui_lang = getattr(session, "uiLanguage", "kk")
-    if ui_lang == "ru":
-        txt = (
-            f"🧸 <b>Детская презентация</b>\n"
-            f"📌 Тема: <b>«{clean_topic}»</b>\n\n"
-            f"🌐 <b>Шаг 2: На каком языке создать презентацию?</b>"
-        )
-    else:
-        txt = (
-            f"🧸 <b>Балалар презентациясы</b>\n"
-            f"📌 Тақырып: <b>«{clean_topic}»</b>\n\n"
-            f"🌐 <b>2-қадам: Презентация қай тілде жасалсын?</b>"
-        )
-    await message.answer(txt, reply_markup=dict_to_inline_markup(build_wiz_kids_lang_keyboard(ui_lang)))
+    dir_title = get_dir_title(session.templateId or "standard", l)
+    txt = i18n_t("ask_pres_lang", l, dir_title=dir_title, topic=clean_topic)
+    await send_clean(message.bot, message.chat.id, txt, reply_markup=dict_to_inline_markup(build_wiz_academic_lang_keyboard(l)), user_msg_id=message.message_id)
 
 
 @router.message(Command("templates"))
@@ -958,15 +908,18 @@ async def cmd_reset(message: Message):
     )
 
 
+@router.message(Command("qarjy"))
 @router.message(Command("tariffs"))
 @router.message(Command("balance"))
-@router.message(F.text.in_({"💳 Баланс / Тарифтер", "💳 Тарифтер"}))
+@router.message(F.text.in_({"💳 Баланс", "💳 Balance", "Баланс", "Balance", "💳 Баланс / Тарифтер", "💳 Баланс / Тарифы", "💳 Тарифтер"}))
 async def cmd_tariffs(message: Message, state: FSMContext):
     await state.clear()
     uid = message.from_user.id if message.from_user else message.chat.id
+    session = get_telegram_session(message.chat.id)
+    l = norm_lang(getattr(session, "uiLanguage", "kk"))
     track_funnel_event(uid, "tariff_viewed")
-    text, kb = get_tariffs_message(uid)
-    await message.answer(text, reply_markup=dict_to_inline_markup(kb))
+    text, kb = get_balance_message(uid, ui_lang=l)
+    await send_clean(message.bot, message.chat.id, text, reply_markup=dict_to_inline_markup(kb), user_msg_id=message.message_id)
 
 
 @router.message(Command("referral"))
@@ -986,16 +939,18 @@ async def cmd_referral(message: Message, state: FSMContext, bot: Bot):
 
 
 @router.message(Command("support"))
-@router.message(F.text.in_({"👨‍💻 Админмен байланыс", "❓ Көмек"}))
+@router.message(F.text.in_({"👨‍💻 Байланыс", "👨‍💻 Поддержка", "👨‍💻 Support", "Байланыс", "Поддержка", "Support", "👨‍💻 Админмен байланыс", "👨‍💻 Связь с админом", "❓ Көмек"}))
 async def cmd_support(message: Message, state: FSMContext):
     await state.clear()
     uid = message.from_user.id if message.from_user else message.chat.id
+    session = get_telegram_session(message.chat.id)
+    l = norm_lang(getattr(session, "uiLanguage", "kk"))
     if message.text == "❓ Көмек":
         text, kb = get_help_message()
         await message.answer(text, reply_markup=dict_to_reply_markup(kb))
         return
-    text, kb = get_support_message(uid)
-    await message.answer(text, reply_markup=dict_to_inline_markup(kb))
+    text, kb = get_support_message(uid, ui_lang=l)
+    await send_clean(message.bot, message.chat.id, text, reply_markup=dict_to_inline_markup(kb), user_msg_id=message.message_id)
 
 
 @router.message(Command("help"))
@@ -1021,32 +976,31 @@ async def cmd_design(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=dict_to_inline_markup(kb))
 
 
+@router.message(Command("jaba"))
 @router.message(Command("projects"))
-@router.message(F.text.in_({"📂 Менің жобаларым", "📂 Мои проекты"}))
+@router.message(F.text.in_({"📂 Менің жобаларым", "📂 Мои проекты", "📂 My Projects", "Менің жобаларым", "Мои проекты", "My Projects"}))
 async def cmd_projects(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id if message.from_user else message.chat.id
+    session = get_telegram_session(message.chat.id)
+    l = norm_lang(getattr(session, "uiLanguage", "kk"))
     projects, total = get_user_projects(user_id, limit=6, offset=0)
     if not projects:
         await message.answer(
-            "📂 <b>Сізде әзірге сақталған жобалар жоқ.</b>\n\n"
-            "Чатқа кез келген презентация тақырыбын жазыңыз немесе .PDF / .DOCX құжатын жіберіңіз — "
-            "жасалған барлық презентацияларыңыз осы жерде автоматты түрде сақталады!",
-            reply_markup=dict_to_reply_markup(get_persistent_reply_keyboard()),
+            i18n_t("projects_empty", l),
+            reply_markup=dict_to_reply_markup(get_persistent_reply_keyboard(l, is_admin_user=is_admin(user_id))),
         )
         return
 
-    text = (
-        f"📂 <b>Менің сақталған жобаларым ({total}):</b>\n\n"
-        f"Кез келген жобаны бассаңыз, бот бірден <b>.PPTX + .PDF + .DOCX Қорғау сөзін</b> қайта жібереді:"
-    )
-    kb = build_user_projects_keyboard(projects, page=0, total_count=total)
-    await message.answer(text, reply_markup=dict_to_inline_markup(kb))
+    text = i18n_t("projects_header", l, total=total)
+    kb = build_user_projects_keyboard(projects, page=0, total_count=total, ui_lang=l)
+    await send_clean(message.bot, message.chat.id, text, reply_markup=dict_to_inline_markup(kb), user_msg_id=message.message_id)
 
 
 # ----------------- Admin Commands (/admin and /give) -----------------
 
 @router.message(Command("admin"))
+@router.message(F.text.in_({"⚙️ Админ", "⚙️ Admin", "Админ", "Admin"}))
 async def cmd_admin(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id if message.from_user else 0
@@ -1127,12 +1081,10 @@ async def cmd_cancel(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "enter_promo")
 async def cb_enter_promo(callback: CallbackQuery, state: FSMContext):
+    session = get_telegram_session(callback.message.chat.id)
+    l = norm_lang(getattr(session, "uiLanguage", "kk"))
     await state.set_state(BotStates.waiting_for_promo_code)
-    await callback.message.answer(
-        "🎟 <b>1-реттік Промокодты немесе Сыйлық науқаны кодын жазып жіберіңіз:</b>\n"
-        "Мысалы: <code>ALASH2025</code>, <code>KAZNU50</code> (-50%) немесе <code>BONUS2025</code> (+1 тегін през)\n\n"
-        "Бас тарту үшін: /cancel"
-    )
+    await callback.message.answer(i18n_t("promo_prompt", l))
     await callback.answer()
 
 
@@ -1142,8 +1094,7 @@ async def process_promo_code_input(message: Message, state: FSMContext):
     uid = message.from_user.id if message.from_user else message.chat.id
     code = (message.text or "").strip()
     ok, msg_text, _ = apply_promo_code_to_user(uid, code)
-    t_text, t_kb = get_tariffs_message(uid)
-    await message.answer(f"{msg_text}\n\n{t_text}", reply_markup=dict_to_inline_markup(t_kb))
+    await send_clean(message.bot, message.chat.id, msg_text, user_msg_id=message.message_id)
 
 
 @router.callback_query(F.data == "adm_add_promo")
@@ -1185,6 +1136,81 @@ async def process_admin_new_promo(message: Message, state: FSMContext):
     await message.answer(
         f"✅ <b>«{code}» промокоды/науқаны қосылды!</b>",
         reply_markup=dict_to_inline_markup(build_admin_promos_keyboard(promos)),
+    )
+
+
+
+@router.callback_query(F.data == "adm_set_pres_price")
+async def cb_adm_set_pres_price(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Рұқсат жоқ", show_alert=True)
+        return
+    await state.set_state(BotStates.waiting_for_pres_price_kzt)
+    cur_p = get_presentation_price_kzt()
+    await callback.answer()
+    await send_clean(
+        callback.bot,
+        callback.message.chat.id,
+        f"💰 <b>1 презентацияның жаңа бағасын (₸) жазыңыз</b> (Қазір: <b>{cur_p:,} ₸</b>)\n"
+        f"Мысалы: <code>500</code> немесе <code>700</code> (бас тарту: /cancel):",
+    )
+
+
+@router.message(BotStates.waiting_for_pres_price_kzt)
+async def process_pres_price_kzt(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+    raw = (message.text or "").strip().replace(" ", "")
+    if not raw.isdigit() or int(raw) <= 0:
+        await send_clean(message.bot, message.chat.id, "⚠️ Тек оң бүтін сан жазыңыз (мысалы: <code>500</code>).", user_msg_id=message.message_id)
+        return
+    new_p = set_presentation_price_kzt(int(raw))
+    await state.clear()
+    txt, kb = get_admin_price_editor_message()
+    await send_clean(
+        message.bot,
+        message.chat.id,
+        f"✅ <b>1 презентация бағасы {new_p:,} ₸ болып жаңартылды!</b>\n\n{txt}",
+        reply_markup=dict_to_inline_markup(kb),
+        user_msg_id=message.message_id,
+    )
+
+
+@router.callback_query(F.data == "adm_set_stars_price")
+async def cb_adm_set_stars_price(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Рұқсат жоқ", show_alert=True)
+        return
+    await state.set_state(BotStates.waiting_for_stars_price_xtr)
+    cur_s = get_stars_price_xtr()
+    await callback.answer()
+    await send_clean(
+        callback.bot,
+        callback.message.chat.id,
+        f"⭐️ <b>Telegram Stars жаңа бағасын жазыңыз</b> (Қазір: <b>{cur_s} ⭐️</b>)\n"
+        f"Мысалы: <code>50</code> немесе <code>75</code> (бас тарту: /cancel):",
+    )
+
+
+@router.message(BotStates.waiting_for_stars_price_xtr)
+async def process_stars_price_xtr(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+    raw = (message.text or "").strip().replace(" ", "")
+    if not raw.isdigit() or int(raw) <= 0:
+        await send_clean(message.bot, message.chat.id, "⚠️ Тек оң бүтін сан жазыңыз (мысалы: <code>50</code>).", user_msg_id=message.message_id)
+        return
+    new_s = set_stars_price_xtr(int(raw))
+    await state.clear()
+    txt, kb = get_admin_price_editor_message()
+    await send_clean(
+        message.bot,
+        message.chat.id,
+        f"✅ <b>Telegram Stars бағасы {new_s} ⭐️ болып жаңартылды!</b>\n\n{txt}",
+        reply_markup=dict_to_inline_markup(kb),
+        user_msg_id=message.message_id,
     )
 
 
@@ -1417,11 +1443,10 @@ async def process_withdrawal_requisites(message: Message, state: FSMContext, bot
 
 @router.callback_query(F.data == "start_support_msg")
 async def cb_start_support_msg(callback: CallbackQuery, state: FSMContext):
+    session = get_telegram_session(callback.message.chat.id)
+    l = norm_lang(getattr(session, "uiLanguage", "kk"))
     await state.set_state(BotStates.waiting_for_support_message)
-    await callback.message.answer(
-        "✍️ <b>Әкімшіге жазатын сұрағыңызды немесе шағымыңызды осында жазып жіберіңіз</b> "
-        "(бас тарту үшін /cancel):"
-    )
+    await callback.message.answer(i18n_t("support_prompt", l))
     await callback.answer()
 
 
@@ -1429,33 +1454,63 @@ async def cb_start_support_msg(callback: CallbackQuery, state: FSMContext):
 async def process_support_message(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     uid = message.from_user.id if message.from_user else message.chat.id
-    u_tag = f"@{message.from_user.username}" if (message.from_user and message.from_user.username) else "Жоқ"
-    fname = message.from_user.first_name if message.from_user else "Қолданушы"
+    session = get_telegram_session(message.chat.id)
+    l = norm_lang(getattr(session, "uiLanguage", "kk"))
     text = (message.text or "").strip()
 
     log_support_ticket(uid, text)
 
-    await message.answer(
-        "✅ <b>Хабарламаңыз әкімшіге жеткізілді!</b> Жауабы осы чатқа келеді.",
-        reply_markup=dict_to_reply_markup(get_persistent_reply_keyboard()),
+    await send_clean(
+        bot,
+        message.chat.id,
+        i18n_t("support_sent", l),
+        reply_markup=dict_to_reply_markup(get_persistent_reply_keyboard(l, is_admin_user=is_admin(uid))),
+        user_msg_id=message.message_id,
     )
 
-    adm_kb = dict_to_inline_markup(build_admin_reply_user_keyboard(uid))
+    sup_users = get_support_users(limit=10)
+    inbox_kb = dict_to_inline_markup(build_admin_support_inbox_keyboard(sup_users))
     for admin_id in config.ADMIN_IDS:
         try:
             await bot.send_message(
                 chat_id=admin_id,
-                text=(
-                    f"📩 <b>ҚОЛДАНУШЫДАН ХАБАРЛАМА / ШАҒЫМ</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"👤 Аты: <b>{fname}</b> ({u_tag})\n"
-                    f"🆔 ID: <code>{uid}</code>\n\n"
-                    f"💬 <b>Мәтіні:</b>\n{text}"
-                ),
-                reply_markup=adm_kb,
+                text="📩 <b>ҚОЛДАНУШЫДАН ХАБАРЛАМА / ШАҒЫМ</b>",
+                reply_markup=inbox_kb,
             )
         except Exception:
             pass
+
+
+@router.callback_query(F.data.startswith("adm_support_view:"))
+async def cb_adm_support_view(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Рұқсат жоқ", show_alert=True)
+        return
+    target_uid = int(callback.data.split(":")[1])
+    prof = get_user_profile(target_uid)
+    fname = prof.get("first_name") or "Қолданушы"
+    uname = prof.get("username")
+    u_tag = f"@{uname}" if uname else f"user_{target_uid}"
+    thread = get_support_thread(target_uid, limit=20)
+    lines = []
+    for m in thread:
+        raw_dt = str(m.get("created_at") or "")[:10]
+        dt_fmt = raw_dt
+        if len(raw_dt) == 10 and raw_dt[4] == "-":
+            dt_fmt = f"{raw_dt[8:10]}.{raw_dt[5:7]}.{raw_dt[2:4]}"
+        sender = "admin" if m.get("sender_role") == "admin" else u_tag
+        lines.append(f"{sender} -> {m.get('message_text')} ({dt_fmt})")
+    history_block = "\n".join(lines) if lines else "—"
+    msg_txt = (
+        f"Аты: <b>{fname}</b> ({u_tag})\n"
+        f"🆔 ID: <code>{target_uid}</code>\n\n"
+        f"💬 <b>Мәтіні:</b>\n{history_block}"
+    )
+    await callback.answer()
+    await callback.message.answer(
+        msg_txt,
+        reply_markup=dict_to_inline_markup(build_admin_reply_user_keyboard(target_uid)),
+    )
 
 
 @router.callback_query(F.data.startswith("reply_user:"))
@@ -1484,6 +1539,7 @@ async def process_admin_reply(message: Message, state: FSMContext, bot: Bot):
         return
 
     reply_text = (message.text or "").strip()
+    log_support_reply(int(target_uid), reply_text)
     try:
         await bot.send_message(
             chat_id=target_uid,
@@ -1644,7 +1700,11 @@ async def _process_kaspi_receipt_locked(
 
     if ver_res.is_duplicate:
         flag_suspicious_activity(uid, f"Қайталанған чек жіберді: {ver_res.receipt_number or filename}", severity="high")
-        await ver_msg.edit_text(ver_res.reason)
+        l = norm_lang(getattr(session, "uiLanguage", "kk"))
+        await ver_msg.edit_text(
+            i18n_t("kaspi_error", l),
+            reply_markup=dict_to_inline_markup(build_support_contact_keyboard(l)),
+        )
         return
 
     tariffs = get_dynamic_tariffs(user_id=uid)
@@ -1712,7 +1772,11 @@ async def _process_kaspi_receipt_locked(
     )
 
     if payment_id == 0:
-        await ver_msg.edit_text("❌ <b>Бұл чек бұрын пайдаланылған.</b>")
+        l = norm_lang(getattr(session, "uiLanguage", "kk"))
+        await ver_msg.edit_text(
+            i18n_t("kaspi_error", l),
+            reply_markup=dict_to_inline_markup(build_support_contact_keyboard(l)),
+        )
         return
 
     session.pendingTariffId = None
@@ -1727,16 +1791,11 @@ async def _process_kaspi_receipt_locked(
     app_res = approve_payment(payment_id)
     if app_res:
         b = app_res["breakdown"]
+        l = norm_lang(getattr(session, "uiLanguage", "kk"))
         await ver_msg.edit_text(
-            f"{ver_res.reason}\n\n"
-            f"🎉 <b>Төлем автоматты түрде қабылданды!</b>\n"
-            f"📦 Пакет: <b>{tariff['title']}</b>\n"
-            f"➕ Қосылды: <b>+{ver_res.credits_to_add} презентация</b> "
-            f"({ver_res.no_photo_to_add} фотосыз / {ver_res.ddg_photo_to_add} фотомен / {ver_res.openai_photo_to_add} OpenAI)\n"
-            f"🎫 <b>Жалпы балансыңыз: {b['total']} през</b> "
-            f"(Бонус: {b['bonus']} | Фотосыз: {b['no_photo']} | Фото: {b['ddg_photo']} | OpenAI: {b['openai_photo']})\n\n"
-            f"Енді презентация тақырыбын жаза беріңіз немесе құжат жіберіңіз!"
+            i18n_t("kaspi_success", l, credits=ver_res.credits_to_add, total=b["total"])
         )
+        track_cleanup_msg(message.chat.id, ver_msg.message_id)
 
         if app_res.get("partner_reward_kzt", 0) > 0 and app_res.get("referrer_id"):
             try:
@@ -1891,6 +1950,7 @@ async def handle_user_text(message: Message, bot: Bot):
     text = message.text.strip()
     chat_id = message.chat.id
     session = get_telegram_session(chat_id)
+    await cleanup_prev_messages(bot, chat_id, user_msg_id=message.message_id)
 
     only_slide_match = re.match(
         r"^(\d{1,2})\s*(бет|слайд|беттік|слайдтан|страниц|slides)(\s+болсын|\s+жаса|\s+қыл)?$", text, re.IGNORECASE
@@ -1972,6 +2032,49 @@ async def handle_user_text(message: Message, bot: Bot):
 
 # ----------------- Callback Handlers -----------------
 
+
+# ----------------- Telegram Stars (XTR) Payment Handlers -----------------
+
+@router.pre_checkout_query()
+async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
+    await pre_checkout_query.answer(ok=True)
+
+
+@router.message(F.successful_payment)
+async def process_successful_stars_payment(message: Message, state: FSMContext):
+    await state.clear()
+    sp = message.successful_payment
+    if not sp or sp.currency != "XTR":
+        return
+    uid = message.from_user.id if message.from_user else message.chat.id
+    if message.from_user:
+        log_user(uid, message.from_user.username, message.from_user.first_name)
+    session = get_telegram_session(message.chat.id)
+    l = norm_lang(getattr(session, "uiLanguage", "kk"))
+    credits_to_add = 1
+    try:
+        if sp.invoice_payload and ":" in sp.invoice_payload:
+            credits_to_add = max(1, int(sp.invoice_payload.split(":")[-1]))
+    except Exception:
+        credits_to_add = 1
+
+    charge_id = sp.telegram_payment_charge_id or f"xtr_{uid}_{int(time.time() * 1000)}"
+    pay_id = create_payment_record(
+        user_id=uid,
+        tariff_id="stars_single",
+        amount_kzt=get_presentation_price_kzt() * credits_to_add,
+        credits_added=credits_to_add,
+        receipt_hash=charge_id,
+        receipt_number=charge_id,
+    )
+    if pay_id:
+        approve_payment(pay_id)
+    else:
+        add_user_credits(uid, credits_to_add)
+    logger.info(f"Telegram Stars payment succeeded: uid={uid}, credits={credits_to_add}, pay_id={pay_id}")
+    await send_clean(message.bot, message.chat.id, i18n_t("stars_success", l))
+
+
 @router.callback_query()
 async def handle_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
     current_state = await state.get_state()
@@ -1990,32 +2093,63 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
         await callback.answer()
         return
 
-    # 0. UI Language Selection (/start -> Қазақша / Русский)
-    if data.startswith("set_ui_lang:"):
-        chosen_ui = data.split(":")[1].lower().strip()
-        session.uiLanguage = "ru" if chosen_ui == "ru" else "kk"
-        session.language = "русский" if session.uiLanguage == "ru" else "қазақша"
-        save_session(chat_id, session)
-        set_user_ui_lang(user_id, session.uiLanguage)
-        await callback.answer("🇷🇺 Язык: Русский" if session.uiLanguage == "ru" else "🇰🇿 Тіл: Қазақша")
-
-        # Send localized persistent bottom reply keyboard
-        kb_Confirm = (
-            "✅ Язык интерфейса установлен: <b>Русский 🇷🇺</b>"
-            if session.uiLanguage == "ru"
-            else "✅ Бот тілі таңдалды: <b>Қазақша 🇰🇿</b>"
-        )
-        await bot.send_message(
+    # Telegram Stars (XTR) Invoice
+    if data.startswith("pay_stars:"):
+        credits_cnt = 1
+        try:
+            credits_cnt = max(1, int(data.split(":")[1]))
+        except Exception:
+            credits_cnt = 1
+        l = norm_lang(getattr(session, "uiLanguage", "kk"))
+        stars_amt = get_stars_price_xtr() * credits_cnt
+        await callback.answer()
+        await cleanup_prev_messages(bot, chat_id)
+        inv_msg = await bot.send_invoice(
             chat_id=chat_id,
-            text=kb_Confirm,
-            reply_markup=dict_to_reply_markup(get_persistent_reply_keyboard(session.uiLanguage)),
+            title=i18n_t("stars_title", l),
+            description=i18n_t("stars_desc", l),
+            payload=f"stars_pres:{user_id}:{credits_cnt}",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label=i18n_t("stars_title", l), amount=stars_amt)],
         )
-        # Immediately show the 3-Direction Selection Menu
-        dir_text, dir_kb = get_direction_menu_message(chat_id)
-        await bot.send_message(chat_id=chat_id, text=dir_text, reply_markup=dict_to_inline_markup(dir_kb))
+        track_cleanup_msg(chat_id, inv_msg.message_id)
         return
 
-    # Restart / New Presentation -> Show 3-Direction Selection Menu
+
+    # 0. UI Language Selection (/start -> Қазақша / Русский / English)
+    if data.startswith("set_ui_lang:"):
+        chosen_ui = norm_lang(data.split(":")[1])
+        session.uiLanguage = chosen_ui
+        if chosen_ui == "ru":
+            session.language = "русский"
+        elif chosen_ui == "en":
+            session.language = "english"
+        else:
+            session.language = "қазақша"
+        save_session(chat_id, session)
+        set_user_ui_lang(user_id, session.uiLanguage)
+        await callback.answer(chosen_ui.upper())
+
+        await cleanup_prev_messages(bot, chat_id)
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+        except Exception:
+            pass
+        m1 = await bot.send_message(
+            chat_id=chat_id,
+            text=i18n_t("lang_set_confirm", chosen_ui),
+            reply_markup=dict_to_reply_markup(
+                get_persistent_reply_keyboard(chosen_ui, is_admin_user=is_admin(user_id))
+            ),
+        )
+        track_cleanup_msg(chat_id, m1.message_id)
+        dir_text, dir_kb = get_direction_menu_message(chat_id)
+        m2 = await bot.send_message(chat_id=chat_id, text=dir_text, reply_markup=dict_to_inline_markup(dir_kb))
+        track_cleanup_msg(chat_id, m2.message_id)
+        return
+
+    # Restart / New Presentation -> Show Direction Selection Menu
     if data == "new_presentation":
         await callback.answer()
         dir_text, dir_kb = get_direction_menu_message(chat_id)
@@ -2025,170 +2159,49 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
             await bot.send_message(chat_id=chat_id, text=dir_text, reply_markup=dict_to_inline_markup(dir_kb))
         return
 
-    # Select one of the 3 strictly separated directions (Academic / Kids Presentation / Storybook)
-    if data.startswith("select_track:"):
-        track = data.split(":")[1]
-        ui_lang = getattr(session, "uiLanguage", "kk")
-        is_ru = ui_lang == "ru"
+    # Select one of the 9 presentation directions
+    if data.startswith("select_dir:"):
+        dir_id = data.split(":")[1]
+        if dir_id not in DIRECTIONS:
+            dir_id = "standard"
+        l = norm_lang(getattr(session, "uiLanguage", "kk"))
+        session.flowType = "academic"
+        session.isStorybook = False
+        session.templateId = dir_id
+        session.personaStyle = DIRECTIONS[dir_id]["persona"]
+        save_session(chat_id, session)
+        await state.set_state(BotStates.wiz_academic_topic)
         await callback.answer()
+        prompt_txt = i18n_t("ask_topic", l, dir_title=get_dir_title(dir_id, l))
+        try:
+            await bot.edit_message_text(text=prompt_txt, chat_id=chat_id, message_id=msg_id)
+            track_cleanup_msg(chat_id, msg_id)
+        except Exception:
+            await send_clean(bot, chat_id, prompt_txt)
+        return
 
-        if track == "academic":
-            session.flowType = "academic"
-            session.isStorybook = False
-            session.templateId = "standard"
-            if session.personaStyle == "kids_fairy":
-                session.personaStyle = "academic_universal"
-            save_session(chat_id, session)
-            await state.set_state(BotStates.wiz_academic_topic)
-            prompt_txt = (
-                "🎓 <b>Академическая презентация</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "✍️ <b>Шаг 1: Напишите тему (название) презентации</b>\n"
-                "<i>(или отправьте готовый файл .PDF / .DOCX / .TXT):</i>"
-                if is_ru
-                else "🎓 <b>Академиялық презентация</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "✍️ <b>1-қадам: Презентацияның атауын (тақырыбын) жазыңыз</b>\n"
-                "<i>(немесе дайын .PDF / .DOCX / .TXT құжатын жіберіңіз):</i>"
-            )
-            try:
-                await bot.edit_message_text(text=prompt_txt, chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                await bot.send_message(chat_id=chat_id, text=prompt_txt)
-            return
-
-        if track == "kids_presentation":
-            session.flowType = "kids_presentation"
-            session.isStorybook = False
-            session.templateId = "kids_edu"
-            session.personaStyle = "kids_fairy"
-            session.withPhotos = True
-            session.imageSource = "gpt-image-2"
-            save_session(chat_id, session)
-            await state.set_state(BotStates.wiz_kids_pres_topic)
-            prompt_txt = (
-                "🧸 <b>Детская презентация (990 ₸)</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "✍️ <b>Шаг 1: Напишите тему детской презентации:</b>\n"
-                "<i>Например: Солнечная система и планеты, Мир динозавров, Правила дорожного движения</i>"
-                if is_ru
-                else "🧸 <b>Балаларға арналған презентация (990 ₸)</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "✍️ <b>1-қадам: Балалар презентациясының тақырыбын жазыңыз:</b>\n"
-                "<i>Мысалы: Күн жүйесі және планеталар, Динозаврлар әлемі, Жол ережесі</i>"
-            )
-            try:
-                await bot.edit_message_text(text=prompt_txt, chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                await bot.send_message(chat_id=chat_id, text=prompt_txt)
-            return
-
-        if track == "storybook":
-            session.flowType = "storybook"
-            session.isStorybook = True
-            session.templateId = "storybook"
-            session.personaStyle = "kids_fairy"
-            session.withPhotos = True
-            session.imageSource = "gpt-image-2"
-            save_session(chat_id, session)
-            prompt_txt = (
-                "🧚 <b>Сказка-презентация (Только из фото)</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "1️⃣ <b>📸 С фото ребенка (4 990 ₸):</b> Загрузите фото ребенка → GPT-4o Vision создаст постоянный «цифровой аватар» ребенка для всех сцен сказки!\n"
-                "2️⃣ <b>🧚 Без фото ребенка (1 490 ₸):</b> Иллюстрированная сказка по имени ребенка и теме.\n\n"
-                "👇 <b>Выберите формат сказки:</b>"
-                if is_ru
-                else "🧚 <b>Ертегі-презентация (Тек фотодан тұрады)</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "1️⃣ <b>📸 Бала фотосымен (4 990 ₸):</b> Баланың фотосын жүктейсіз → GPT-4o Vision баланың бет-әлпетін, шаш түсін, көзін, киімін сипаттап, әр ертегі сахнасына тұрақты «цифрлық аватар» қосады!\n"
-                "2️⃣ <b>🧚 Бала фотосынсыз (1 490 ₸):</b> Баланың аты мен ертегі тақырыбы бойынша иллюстрацияланған ертегі.\n\n"
-                "👇 <b>Ертегі түрін таңдаңыз:</b>"
-            )
-            kb_sm = dict_to_inline_markup(build_wiz_storybook_mode_keyboard(ui_lang))
-            try:
-                await bot.edit_message_text(text=prompt_txt, chat_id=chat_id, message_id=msg_id, reply_markup=kb_sm)
-            except Exception:
-                await bot.send_message(chat_id=chat_id, text=prompt_txt, reply_markup=kb_sm)
-            return
-
-    if data.startswith("wiz_story_mode:"):
-        s_mode = data.split(":")[1]
-        ui_lang = getattr(session, "uiLanguage", "kk")
-        is_ru = ui_lang == "ru"
-        session.flowType = "storybook"
-        session.isStorybook = True
-        session.templateId = "storybook"
-        session.personaStyle = "kids_fairy"
-        session.withPhotos = True
-        session.imageSource = "gpt-image-2"
-        await callback.answer()
-
-        if s_mode == "with_photo":
-            session.storybookWithPhoto = True
-            save_session(chat_id, session)
-            await state.set_state(BotStates.waiting_for_storybook_photo)
-            txt = (
-                "📸 <b>Сказка с фото ребенка (4 990 ₸ • GPT-4o Vision)</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "👶 <b>Шаг 1: Отправьте четкую фотографию ребенка в этот чат:</b>\n"
-                "<i>GPT-4o Vision детально опишет черты лица, цвет волос, глаза и одежду ребенка для генерации сцен в DALL·E 3.</i>"
-                if is_ru
-                else "📸 <b>Ертегі-презентация: Бала фотосымен (4 990 ₸ • GPT-4o Vision)</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "👶 <b>1-қадам: Баланың анық түскен фотосын осы чатқа жіберіңіз:</b>\n"
-                "<i>GPT-4o Vision баланың бет-әлпетін, шаш түсін, көзін және киімін егжей-тегжейлі сипаттап, DALL·E 3 үшін тұрақты цифрлық аватар дайындайды.</i>"
-            )
-            try:
-                await bot.edit_message_text(text=txt, chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                await bot.send_message(chat_id=chat_id, text=txt)
-            return
-        else:
-            session.storybookWithPhoto = False
-            session.childAvatarDesc = None
-            save_session(chat_id, session)
-            await state.set_state(BotStates.waiting_for_storybook_input)
-            txt = (
-                "🧚 <b>Сказка-презентация без фото (1 490 ₸)</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "👶 <b>Шаг 1: Напишите имя ребенка и тему сказки:</b>\n"
-                "<i>Например: <code>Айсултан — Волшебное путешествие в космос</code></i>"
-                if is_ru
-                else "🧚 <b>Ертегі-презентация: Бала фотосынсыз (1 490 ₸)</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "👶 <b>1-қадам: Баланың аты мен ертегі тақырыбын жазыңыз:</b>\n"
-                "<i>Мысалы: <code>Айсұлтан — Ғарышқа сиқырлы саяхат</code></i>"
-            )
-            try:
-                await bot.edit_message_text(text=txt, chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                await bot.send_message(chat_id=chat_id, text=txt)
-            return
-
-    # --- TRACK 1 (ACADEMIC) WIZARD STEPS: Lang -> Slides -> Photo Mode -> Generate ---
+    # --- WIZARD STEPS: Lang -> Slides -> Photo Mode -> Generate ---
     if data.startswith("wiz_acad_lang:"):
         lang_val = data.split(":")[1]
         if lang_val in config.SUPPORTED_LANGUAGES:
             session.language = lang_val
             save_session(chat_id, session)
-        ui_lang = getattr(session, "uiLanguage", "kk")
-        is_ru = ui_lang == "ru"
+        l = norm_lang(getattr(session, "uiLanguage", "kk"))
         l_lbl = config.SUPPORTED_LANGUAGES.get(session.language, config.SUPPORTED_LANGUAGES["қазақша"])["label"]
-        await callback.answer(f"🌐 {l_lbl}")
-        txt = (
-            f"🎓 <b>Академическая презентация</b>\n"
-            f"📌 Тема: <b>«{session.pendingTopic}»</b>\n"
-            f"🌐 Язык презентации: <b>{l_lbl}</b>\n\n"
-            f"📄 <b>Шаг 3: Сколько слайдов (страниц) должно быть?</b>"
-            if is_ru
-            else f"🎓 <b>Академиялық презентация</b>\n"
-            f"📌 Тақырып: <b>«{session.pendingTopic}»</b>\n"
-            f"🌐 Презентация тілі: <b>{l_lbl}</b>\n\n"
-            f"📄 <b>3-қадам: Неше беттік презентация жасаймыз?</b>"
+        dir_title = get_dir_title(session.templateId or "standard", l)
+        await callback.answer(l_lbl)
+        txt = i18n_t(
+            "ask_slides",
+            l,
+            dir_title=dir_title,
+            topic=session.pendingTopic or "Presentation",
+            pres_lang=l_lbl,
         )
         await bot.edit_message_text(
-            text=txt, chat_id=chat_id, message_id=msg_id,
-            reply_markup=dict_to_inline_markup(build_wiz_academic_slides_keyboard(ui_lang)),
+            text=txt,
+            chat_id=chat_id,
+            message_id=msg_id,
+            reply_markup=dict_to_inline_markup(build_wiz_academic_slides_keyboard(l)),
         )
         return
 
@@ -2196,24 +2209,23 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
         n = int(data.split(":")[1])
         session.slideCount = n
         save_session(chat_id, session)
-        ui_lang = getattr(session, "uiLanguage", "kk")
-        is_ru = ui_lang == "ru"
+        l = norm_lang(getattr(session, "uiLanguage", "kk"))
         l_lbl = config.SUPPORTED_LANGUAGES.get(session.language, config.SUPPORTED_LANGUAGES["қазақша"])["label"]
-        await callback.answer(f"📄 {n}")
-        txt = (
-            f"🎓 <b>Академическая презентация</b>\n"
-            f"📌 Тема: <b>«{session.pendingTopic}»</b>\n"
-            f"🌐 Язык: <b>{l_lbl}</b> • 📄 Объем: <b>{n} слайдов</b>\n\n"
-            f"🖼 <b>Шаг 4: Выберите формат (с фото или без фото) для запуска генерации:</b>"
-            if is_ru
-            else f"🎓 <b>Академиялық презентация</b>\n"
-            f"📌 Тақырып: <b>«{session.pendingTopic}»</b>\n"
-            f"🌐 Тіл: <b>{l_lbl}</b> • 📄 Көлемі: <b>{n} бет</b>\n\n"
-            f"🖼 <b>4-қадам: Фотомен бе, әлде фотосыз ба? (Бассаңыз, бірден генерация басталады):</b>"
+        dir_title = get_dir_title(session.templateId or "standard", l)
+        await callback.answer(f"{n}")
+        txt = i18n_t(
+            "ask_photo",
+            l,
+            dir_title=dir_title,
+            topic=session.pendingTopic or "Presentation",
+            pres_lang=l_lbl,
+            count=n,
         )
         await bot.edit_message_text(
-            text=txt, chat_id=chat_id, message_id=msg_id,
-            reply_markup=dict_to_inline_markup(build_wiz_academic_photo_keyboard(ui_lang)),
+            text=txt,
+            chat_id=chat_id,
+            message_id=msg_id,
+            reply_markup=dict_to_inline_markup(build_wiz_academic_photo_keyboard(l)),
         )
         return
 
@@ -2222,79 +2234,20 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
         session.isStorybook = False
         if p_mode == "none":
             session.withPhotos = False
-        elif p_mode == "ddg":
+        elif p_mode in ("photo", "ddg"):
             session.withPhotos = True
-            session.imageSource = "ddg"
+            modes = get_enabled_generation_modes()
+            session.imageSource = "ddg" if modes.get("ddg", True) else "gpt-image-2"
         else:
             session.withPhotos = True
             session.imageSource = "gpt-image-2"
         save_session(chat_id, session)
-        await callback.answer("🚀 Генерация басталды!")
+        await callback.answer("🚀")
         await execute_generation(
             bot, chat_id, session, user_id=user_id, slide_count=session.slideCount,
             existing_msg_id=msg_id if not is_doc else None,
         )
         return
-
-    # --- TRACK 2 (KIDS PRESENTATION) WIZARD STEPS: Lang -> Slides -> Generate ---
-    if data.startswith("wiz_kids_lang:"):
-        lang_val = data.split(":")[1]
-        if lang_val in config.SUPPORTED_LANGUAGES:
-            session.language = lang_val
-            save_session(chat_id, session)
-        ui_lang = getattr(session, "uiLanguage", "kk")
-        is_ru = ui_lang == "ru"
-        l_lbl = config.SUPPORTED_LANGUAGES.get(session.language, config.SUPPORTED_LANGUAGES["қазақша"])["label"]
-        await callback.answer(f"🌐 {l_lbl}")
-        txt = (
-            f"🧸 <b>Детская презентация</b>\n"
-            f"📌 Тема: <b>«{session.pendingTopic}»</b>\n"
-            f"🌐 Язык: <b>{l_lbl}</b>\n\n"
-            f"📄 <b>Шаг 3: Выберите количество слайдов</b> (после нажатия сразу начнется генерация):"
-            if is_ru
-            else f"🧸 <b>Балалар презентациясы</b>\n"
-            f"📌 Тақырып: <b>«{session.pendingTopic}»</b>\n"
-            f"🌐 Тіл: <b>{l_lbl}</b>\n\n"
-            f"📄 <b>3-қадам: Неше беттік презентация жасаймыз?</b> (Бет санын бассаңыз, бірден генерация басталады):"
-        )
-        await bot.edit_message_text(
-            text=txt, chat_id=chat_id, message_id=msg_id,
-            reply_markup=dict_to_inline_markup(build_wiz_kids_slides_keyboard(ui_lang)),
-        )
-        return
-
-    if data.startswith("wiz_kids_gen:"):
-        n = int(data.split(":")[1])
-        session.slideCount = n
-        session.isStorybook = False
-        session.templateId = "kids_edu"
-        session.personaStyle = "kids_fairy"
-        session.withPhotos = True
-        save_session(chat_id, session)
-        await callback.answer("🧸 Балалар презентациясы дайындалуда...")
-        await execute_generation(
-            bot, chat_id, session, user_id=user_id, slide_count=n,
-            existing_msg_id=msg_id if not is_doc else None,
-        )
-        return
-
-    # --- TRACK 3 (STORYBOOK) WIZARD STEP 2: Slides -> Generate ---
-    if data.startswith("wiz_story_gen:"):
-        n = int(data.split(":")[1])
-        session.slideCount = n
-        session.isStorybook = True
-        session.templateId = "storybook"
-        session.personaStyle = "kids_fairy"
-        session.withPhotos = True
-        session.imageSource = "gpt-image-2"
-        save_session(chat_id, session)
-        await callback.answer("🧚 Ертегі-презентация дайындалуда...")
-        await execute_generation(
-            bot, chat_id, session, user_id=user_id, slide_count=n,
-            existing_msg_id=msg_id if not is_doc else None,
-        )
-        return
-
 
     # Toggle Photo Mode (none / ddg / gpt-image-2)
     if data.startswith("set_photo:"):
@@ -2820,7 +2773,7 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
             await callback.answer("📄 Тек «Фотосыз» режимі қалдырылды!")
         else:
             enable_all_generation_modes()
-            await callback.answer("🔄 Барлық 3 презентация түрі қосылды!")
+            await callback.answer("🔄 Екі режим де қосылды!")
         text, kb = get_admin_gen_modes_message()
         try:
             await callback.message.edit_text(text, reply_markup=dict_to_inline_markup(kb))
@@ -3145,14 +3098,7 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
         parts = data.split(":")
         target_uid = int(parts[1])
         delta = int(parts[2])
-        if delta == 20:
-            new_bal = add_user_credits(target_uid, 20, no_photo_to_add=10, ddg_photo_to_add=5, openai_photo_to_add=5)
-        elif delta == 30:
-            new_bal = add_user_credits(target_uid, 30, no_photo_to_add=10, ddg_photo_to_add=10, openai_photo_to_add=10)
-        elif delta == 80:
-            new_bal = add_user_credits(target_uid, 80, no_photo_to_add=40, ddg_photo_to_add=20, openai_photo_to_add=20)
-        else:
-            new_bal = add_user_credits(target_uid, delta, is_bonus=(delta > 0))
+        new_bal = add_user_credits(target_uid, delta, is_bonus=(delta == 1))
 
         card_text, projects = format_user_admin_card(target_uid)
         await callback.answer(f"Баланс өзгертілді: {new_bal} през!")
@@ -3234,11 +3180,9 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
             projects, total = get_user_projects(user_id, limit=page_size, offset=0)
 
         await callback.answer()
-        text = (
-            f"📂 <b>Менің сақталған жобаларым ({total}):</b>\n\n"
-            f"Жобаны басып, оны <b>.PPTX + .PDF + .DOCX</b> түрінде қайта жүктеп алуға болады:"
-        )
-        kb = build_user_projects_keyboard(projects, page=page, total_count=total, page_size=page_size)
+        l = norm_lang(getattr(session, "uiLanguage", "kk"))
+        text = i18n_t("projects_header", l, total=total)
+        kb = build_user_projects_keyboard(projects, page=page, total_count=total, page_size=page_size, ui_lang=l)
         if not is_doc:
             await bot.edit_message_text(
                 text=text, chat_id=chat_id, message_id=msg_id, reply_markup=dict_to_inline_markup(kb)
@@ -3434,14 +3378,12 @@ async def main():
             BOT_USERNAME_CACHE = me.username
         await bot.set_my_commands(
             [
-                BotCommand(command="start", description="Ботты іске қосу"),
-                BotCommand(command="tariffs", description="💳 Баланс және Тарифтер"),
-                BotCommand(command="promo", description="🎟 1-реттік Промокод енгізу"),
-                BotCommand(command="templates", description="📐 Үлгілер (Шаблон)"),
-                BotCommand(command="projects", description="📂 Менің жобаларым"),
-                BotCommand(command="referral", description="👥 Реферал және Табыс табу"),
-                BotCommand(command="support", description="👨‍💻 Админмен байланыс"),
-                BotCommand(command="admin", description="📊 Әкімші панелі"),
+                BotCommand(command="start", description="🚀 Бастау"),
+                BotCommand(command="jana", description="✨ Жаңа презентация"),
+                BotCommand(command="jaba", description="📂 Менің жобаларым"),
+                BotCommand(command="til", description="🌐 Тіл / Язык"),
+                BotCommand(command="qarjy", description="💳 Баланс"),
+                BotCommand(command="support", description="👨‍💻 Байланыс"),
             ]
         )
     except Exception as e:

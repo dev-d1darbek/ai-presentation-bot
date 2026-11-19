@@ -1,24 +1,9 @@
-version: "3.9"
-
 services:
-  bot:
+  telegram-bot:
     build: .
     container_name: ai_presentation_bot
     restart: unless-stopped
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
-      - ./files:/app/files
-      - ./logs:/app/logs
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    networks:
-      - botnet
-
-networks:
-  botnet:
-    driver: bridge
+      - .:/app

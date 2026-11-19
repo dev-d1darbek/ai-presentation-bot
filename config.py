@@ -30,7 +30,7 @@ MIN_SLIDE_COUNT: int = 3
 
 # Welcome, Referral & 3-Day Daily Login Streak Rules
 # Ереже: Тегін бонус презентацияларда тек «Бір реттік» (фотосыз) және «Бір реттік + ФОТО» (DDG) қолданылады!
-WELCOME_FREE_CREDITS: int = int(os.getenv("WELCOME_FREE_CREDITS", "1"))
+WELCOME_FREE_CREDITS: int = int(os.getenv("WELCOME_FREE_CREDITS", "0"))
 REFERRAL_FRIENDS_FOR_FREE_SLIDE: int = 2
 STREAK_DAYS_FOR_FREE_SLIDE: int = 3
 PARTNER_MIN_INVITED_USERS: int = 20
@@ -44,6 +44,9 @@ KASPI_BIN: str = os.getenv("KASPI_BIN", "").strip()
 KASPI_PHONE: str = os.getenv("KASPI_PHONE", "+7 777 000 00 00").strip()
 KASPI_RECIPIENT_NAME: str = os.getenv("KASPI_RECIPIENT_NAME", "").strip()
 
+# Telegram Stars (XTR) payment price for 1 presentation
+STARS_PRICE_XTR: int = int(os.getenv("STARS_PRICE_XTR", "50"))
+
 # .env-те DEBUG=1 болса ғана offline чек тексеру рұқсат етіледі
 DEBUG_MODE: bool = os.getenv("DEBUG", "0").strip() in ("1", "true", "True", "yes")
 
@@ -51,11 +54,7 @@ DEBUG_MODE: bool = os.getenv("DEBUG", "0").strip() in ("1", "true", "True", "yes
 ADMIN_CONTACT: str = os.getenv("ADMIN_CONTACT", "").strip()
 
 # DuckDuckGo Фото ескертуі (Міндетті дисклеймер)
-DDG_PHOTO_WARNING_TEXT: str = (
-    "⚠️ <i>Ескерту: «Фотомен (Интернет/ЖИ)» режиміндегі суреттер интернеттен мысал ретінде "
-    "автоматты түрде алынады (ЖИ қателесуі мүмкін). Егер кейбір фото ұнамаса, дайын .PPTX "
-    "файлының ішінде өзіңіз қалаған суретке оңай ауыстырып ала аласыз!</i>"
-)
+DDG_PHOTO_WARNING_TEXT: str = ""
 
 # Estimated AI unit costs (USD) for Admin AI Cost Tracker (📈 AI шығындарын бақылау)
 AI_COST_RATES_USD: Dict[str, float] = {
@@ -73,106 +72,14 @@ USD_TO_KZT_RATE: int = 500
 TARIFF_PLANS: Dict[str, Dict[str, Any]] = {
     "single": {
         "id": "single",
-        "title": "«Бір реттік»",
-        "price_kzt": 200,
+        "title": "📊 1 презентация",
+        "price_kzt": 500,
         "credits": 1,
         "no_photo_credits": 1,
         "ddg_photo_credits": 0,
         "openai_photo_credits": 0,
-        "with_photos": False,
-        "description": "1 презентация (фотосыз)",
-    },
-    "single_photo": {
-        "id": "single_photo",
-        "title": "«Бір реттік + ФОТО»",
-        "price_kzt": 300,
-        "credits": 1,
-        "no_photo_credits": 0,
-        "ddg_photo_credits": 1,
-        "openai_photo_credits": 0,
         "with_photos": True,
-        "description": "1 презентация (интернеттен мысал фотомен — ЖИ қателесуі мүмкін, PPTX-те ауыстыруға болады)",
-    },
-    "single_openai": {
-        "id": "single_openai",
-        "title": "«Бір реттік + ФОТО (OpenAI)»",
-        "price_kzt": 500,
-        "credits": 1,
-        "no_photo_credits": 0,
-        "ddg_photo_credits": 0,
-        "openai_photo_credits": 1,
-        "with_photos": True,
-        "description": "1 презентация (OpenAI gpt-image-2 AI фотогенерациясымен)",
-    },
-    "hit": {
-        "id": "hit",
-        "title": "«Студент (Хит)»",
-        "price_kzt": 3490,
-        "credits": 20,
-        "no_photo_credits": 10,
-        "ddg_photo_credits": 5,
-        "openai_photo_credits": 5,
-        "with_photos": True,
-        "description": "20 презентация (10 фотосыз + 5 фотомен + 5 OpenAI)",
-    },
-    "pro": {
-        "id": "pro",
-        "title": "«Студент Pro»",
-        "price_kzt": 4900,
-        "credits": 30,
-        "no_photo_credits": 10,
-        "ddg_photo_credits": 10,
-        "openai_photo_credits": 10,
-        "with_photos": True,
-        "description": "30 презентация (10 фотосыз + 10 фотомен + 10 OpenAI)",
-    },
-    "vip": {
-        "id": "vip",
-        "title": "«Студент (VIP)»",
-        "price_kzt": 9900,
-        "credits": 80,
-        "no_photo_credits": 40,
-        "ddg_photo_credits": 20,
-        "openai_photo_credits": 20,
-        "with_photos": True,
-        "description": "80 презентация (40 фотосыз + 20 фотомен + 20 OpenAI)",
-    },
-    "kids_presentation": {
-        "id": "kids_presentation",
-        "title": "«Балаларға арналған презентация»",
-        "price_kzt": 990,
-        "credits": 1,
-        "no_photo_credits": 0,
-        "ddg_photo_credits": 0,
-        "openai_photo_credits": 1,
-        "with_photos": True,
-        "description": "1 балаларға арналған түрлі-түсті иллюстрацияланған презентация (990 ₸)",
-    },
-    "kids_storybook": {
-        "id": "kids_storybook",
-        "title": "«Ертегі-презентация (Бала фотосынсыз)»",
-        "price_kzt": 1490,
-        "credits": 1,
-        "no_photo_credits": 0,
-        "ddg_photo_credits": 0,
-        "openai_photo_credits": 1,
-        "with_photos": True,
-        "is_storybook": True,
-        "with_child_photo": False,
-        "description": "Баланың аты + ертегі тақырыбы → тек толық фотолардан тұратын ертегі-презентация (1 490 ₸)",
-    },
-    "kids_storybook_photo": {
-        "id": "kids_storybook_photo",
-        "title": "«Ертегі-презентация (Бала фотосымен)»",
-        "price_kzt": 4990,
-        "credits": 1,
-        "no_photo_credits": 0,
-        "ddg_photo_credits": 0,
-        "openai_photo_credits": 1,
-        "with_photos": True,
-        "is_storybook": True,
-        "with_child_photo": True,
-        "description": "Баланың фотосы (GPT-4o Vision цифрлық аватар) + ертегі сюжеті → балаңыз басты кейіпкер болатын ертегі (4 990 ₸)",
+        "description": "1 презентация (Фотосыз / Фотомен)",
     },
 }
 
@@ -255,12 +162,6 @@ PERSONA_STYLES: Dict[str, Dict[str, str]] = {
         "title": "👩‍🏫 Мұғалім → Педагогикалық стиль",
         "short": "👩‍🏫 Педагогикалық (Мұғалім)",
         "prompt_rule": "Write in a clear pedagogical & didactic style tailored for teachers: include clear learning objectives, accessible step-by-step explanations, engaging real-life examples, and student reflection takeaways.",
-    },
-    "kids_fairy": {
-        "id": "kids_fairy",
-        "title": "🧚 Балалар ертегісі / Танымдық стиль",
-        "short": "🧚 Ертегі / Балалар",
-        "prompt_rule": "Write in a magical, warm, imaginative children's fairy-tale and kid-friendly educational style with vivid sensory descriptions, heroic adventures, and an inspiring moral lesson.",
     },
 }
 
@@ -382,32 +283,6 @@ TEMPLATE_LIBRARY: Dict[str, Dict[str, Any]] = {
             "Жасыл технологиялар мен табиғатты қорғау іс-шаралары",
             "Ресурс үнемдеу және экологиялық-экономикалық тиімділік",
             "Тұрақты даму (SDG) бойынша қорытынды ұсыныстар",
-        ],
-    },
-    "storybook": {
-        "id": "storybook",
-        "title": "🧚 Ертегі-презентация (Тек фотодан)",
-        "gost_compliant": False,
-        "structure": [
-            "Ертегінің басталуы: Басты кейіпкермен және сиқырлы әлеммен танысу",
-            "Ғажайып саяхатқа шақыру және алғашқы құпия",
-            "Сиқырлы достармен кездесу және жаңа өнер үйрену",
-            "Үлкен сынақ: Батылдық пен тапқырлық таныту",
-            "Сиқырлы жеңіс және достардың қуанышы",
-            "Ертегінің тағылымы: Мейірімділік пен білімнің күші",
-        ],
-    },
-    "kids_edu": {
-        "id": "kids_edu",
-        "title": "🧸 Балаларға арналған презентация",
-        "gost_compliant": False,
-        "structure": [
-            "Сәлем, жас дос! Тақырыппен қызықты танысу",
-            "Бұл қалай жұмыс істейді? Қарапайым әрі қызықты түсіндірме",
-            "Таңғажайып деректер мен қызықты мысалдар",
-            "Күнделікті өмірдегі пайдасы мен сиқырлы тәжірибелер",
-            "Ойлан, тап! Қызықты сұрақтар мен тапсырмалар",
-            "Жарайсың! Бүгінгі үйренген басты білімдеріміз",
         ],
     },
 }
