@@ -133,6 +133,5 @@ docker-compose up -d --build
 
 ---
 
-&lt;div align=&quot;center&quot;&gt;
-&lt;sub&gt;Жоба ұнаса, GitHub репозиторийге ⭐️ жұлдызша басуды ұмытпаңыз!&lt;/sub&gt;
-&lt;/div&gt;
+<div align="center"> <sub>Жоба ұнаса, GitHub репозиторийге ⭐️ жұлдызша басуды ұмытпаңыз!</sub> </div>
+
