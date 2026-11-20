@@ -1,18 +1,18 @@
 # ✨ SlideAI KZ — AI Presentation Telegram Bot
 
-&lt;div align=&quot;center&quot;&gt;
+<div align="center">
 
-
-
-
-
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![aiogram](https://img.shields.io/badge/aiogram-3.x-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-10B981?style=for-the-badge)
+![Status](https://img.shields.io/badge/Status-Production%20Ready-success?style=for-the-badge)
 
 **Кәсіби `.PPTX` және `.PDF` презентацияларды жасанды интеллект арқылы лезде жасайтын коммерциялық Telegram-бот.**  
 Қазақ, орыс және ағылшын тілдерінде толық қызмет көрсетеді.
 
 [Мүмкіндіктер](#-негізгі-мүмкіндіктер) • [Архитектура](#-жоба-құрылымы) • [Орнату](#-орнату-және-іске-қосу) • [Админ панель](#-админ-панель) • [Автор](#-автор)
 
-&lt;/div&gt;
+</div>
 
 ---
 
@@ -129,9 +129,19 @@ docker-compose up -d --build
 
 **D1darbek**  
 - GitHub: [@dev-d1darbek](https://github.com/dev-d1darbek/)
+<<<<<<< Updated upstream
 - Telegram: [@dev\_d1darbek](https://t.me/dev_d1darbek)
 
 ---
 
 <div align="center"> <sub>Жоба ұнаса, GitHub репозиторийге ⭐️ жұлдызша басуды ұмытпаңыз!</sub> </div>
 
+=======
+- Telegram: [@dev_d1darbek](https://t.me/dev_d1darbek)
+
+---
+
+<div align="center">
+<sub>Жоба ұнаса, GitHub репозиторийге ⭐️ жұлдызша басуды ұмытпаңыз!</sub>
+</div>
+>>>>>>> Stashed changes

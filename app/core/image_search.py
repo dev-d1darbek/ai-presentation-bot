@@ -39,6 +39,7 @@ REGIONS = ["us-en", "de-de", "uk-en", "fr-fr", "ca-en"]
 # In-memory кэш: query → (timestamp, results)
 _cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _image_bytes_cache: Dict[str, bytes] = {}
+_disabled_openai_models: set = set()
 CACHE_TTL = 3600 * 24  # 24 сағат
 
 
@@ -244,18 +245,24 @@ async def generate_image_gpt_image_2(
         if is_story_prompt
         else f"Editorial presentation photography, clean modern aesthetic, no text overlay: {prompt}"
     )
-    models_to_try = ("dall-e-3", "gpt-image-2", "gpt-image-1") if is_story_prompt else ("gpt-image-2", "gpt-image-1", "dall-e-3")
+    models_to_try = (
+        "gpt-image-2.6-flare",
+        "gpt-image-2.6-sunburst",
+        "gpt-image-2.5-flare",
+        "gpt-image-2.5-sunburst",
+    )
     for model_name in models_to_try:
+        if model_name in _disabled_openai_models:
+            continue
         payload: Dict[str, Any] = {
             "model": model_name,
             "prompt": full_img_prompt[:950],
             "n": 1,
             "size": "1024x1024",
+            "quality": "low",
         }
-        if model_name != "dall-e-3":
-            payload["quality"] = "low"
         try:
-            async with httpx.AsyncClient(timeout=35.0) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 res = await client.post(url, headers=headers, json=payload)
                 if res.status_code == 200:
                     data = res.json()
@@ -273,6 +280,11 @@ async def generate_image_gpt_image_2(
                             _image_bytes_cache[cache_key] = dl
                             log_ai_usage(user_id, "gpt-image-2", units=1, topic=prompt)
                             return dl
+                else:
+                    err_txt = res.text[:300]
+                    logger.warning(f"OpenAI {model_name} image HTTP {res.status_code}: {err_txt}")
+                    if res.status_code in (400, 401, 403) and ("does not exist" in err_txt or "invalid_api_key" in err_txt):
+                        _disabled_openai_models.add(model_name)
         except Exception as e:
             logger.warning(f"OpenAI {model_name} image generation failed: {e}")
 
@@ -438,10 +450,10 @@ async def fetch_image_for_slide(
     if cached_img:
         return cached_img
 
-    if image_source == "gpt-image-2" and config.OPENAI_API_KEY and not config.DEBUG_MODE:
+    if image_source in ("gpt-image-2", "openai") and config.OPENAI_API_KEY and not config.DEBUG_MODE:
         img_bytes = await generate_image_gpt_image_2(query, user_id=user_id)
         if img_bytes:
-            save_cached_slide_image(query, img_bytes, source="gpt-image-2")
+            save_cached_slide_image(query, img_bytes, source=image_source)
             return img_bytes
 
     if not config.DEBUG_MODE:
@@ -457,6 +469,13 @@ async def fetch_image_for_slide(
                         slide.image_url = u
                         save_cached_slide_image(query, dl, source="ddg")
                         return dl
+
+    # Fallback to OpenAI image generation if DDG failed/unavailable and OPENAI_API_KEY is configured
+    if image_source not in ("gpt-image-2", "openai") and config.OPENAI_API_KEY and not config.DEBUG_MODE:
+        img_bytes = await generate_image_gpt_image_2(query, user_id=user_id)
+        if img_bytes:
+            save_cached_slide_image(query, img_bytes, source="gpt-image-2")
+            return img_bytes
 
     fallback_img = render_editorial_visual_card(
         title=slide.title,

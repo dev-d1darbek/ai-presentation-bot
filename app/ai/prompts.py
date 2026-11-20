@@ -109,17 +109,17 @@ Follow this logical section progression across your {count} slides:
 
     if with_photos:
         photo_instruction = (
-            "1. PHOTO-ENABLED MODE: Include a concise 3-5 word English search/generation prompt in `\"image_query\"` on every slide (e.g. `\"modern artificial intelligence laboratory\"`) and use layout types `\"photo_hero\"`, `\"photo_split\"`, `\"photo_magazine\"`, `\"statistics\"`, `\"timeline\"`, `\"two_person_comparison\"`, `\"conclusion\"`."
+            "1. PHOTO-ENABLED INFORMATION-RICH MODE: Include a concise 3-5 word English search/generation prompt in `\"image_query\"` on every slide (e.g. `\"modern artificial intelligence laboratory\"`) AND ALWAYS write full, deep, information-packed analytical text! Prefer `\"photo_split\"`, `\"split_screen\"`, `\"statistics\"`, `\"timeline\"`, `\"two_person_comparison\"`, and `\"conclusion\"` layouts so every slide has rich multi-sentence text + 4 detailed bullet points alongside the image (do NOT leave slides sparse or empty)."
         )
-        density_instruction = f"""4. RICH & BALANCED ANALYTICAL CONTENT ON EVERY SLIDE (in {language}):
-   - 'title': Clear, informative headline of 4–8 words.
-   - 'subtitle': Substantive subtitle of 6–12 words explaining the slide's focus.
-   - 'content': Write a substantive, detailed analytical paragraph of 42–60 words in {language} explaining core concepts, mechanisms, historical facts, and quantitative data.
-   - 'key_points': Provide 3 to 4 detailed, informative bullet statements of 14–22 words each in {language} with concrete facts, figures, examples, and conclusions."""
-        type_fields_instruction = """8. ONLY INCLUDE TYPE-SPECIFIC FIELDS WHEN NEEDED:
-   - Include "stats" (array of 3 items: {"value": "Metric (e.g. $1.8 трлн, 35%)", "label": "Detailed explanation of the metric (10-16 words)"}) ONLY when "type" is "statistics".
-   - Include "timeline" (array of 3 items: {"step": "01", "title": "Stage title", "desc": "Detailed stage explanation (20-30 words) with dates and facts"}) ONLY when "type" is "timeline".
-   - Include "comparison" ({"entityA": {"name": "Entity A name", "points": [4 detailed items of 14-20 words each]}, "entityB": {"name": "Entity B name", "points": [4 detailed items of 14-20 words each]}}) ONLY when "type" is "two_person_comparison"."""
+        density_instruction = f"""4. DEEP, WORD-RICH & COMPREHENSIVE ANALYTICAL CONTENT ON EVERY SLIDE (in {language} — NEVER WRITE SHORT OR SUPERFICIAL TEXTS!):
+   - 'title': Clear, informative academic/professional headline of 5–9 words in {language}.
+   - 'subtitle': Substantive 1–2 line analytical subtitle of 8–14 words in {language} explaining the slide's core thesis.
+   - 'content': MUST be a deep, comprehensive analytical paragraph of 65–90 words (4–6 full sentences) in {language} thoroughly explaining definitions, historical context, causal mechanisms, quantitative statistics, and practical significance.
+   - 'key_points': MUST provide 4 detailed, fact-packed bullet statements of 20–30 words each (1–2 full sentences per bullet) in {language} with concrete dates, percentages, scholarly/industry examples, and analytical conclusions."""
+        type_fields_instruction = """8. ONLY INCLUDE TYPE-SPECIFIC FIELDS WHEN NEEDED (MAKE THEM DETAILED AND INFORMATIVE):
+   - Include "stats" (array of 3 items: {"value": "Metric (e.g. $1.8 трлн, 35%)", "label": "Detailed explanation of the metric with context (14-22 words)"}) ONLY when "type" is "statistics".
+   - Include "timeline" (array of 3 items: {"step": "01", "title": "Stage title", "desc": "Comprehensive stage explanation (28-40 words) with dates, causes, and outcomes"}) ONLY when "type" is "timeline".
+   - Include "comparison" ({"entityA": {"name": "Entity A name", "points": [4 detailed items of 18-26 words each]}, "entityB": {"name": "Entity B name", "points": [4 detailed items of 18-26 words each]}}) ONLY when "type" is "two_person_comparison"."""
     else:
         photo_instruction = (
             "1. NO-PHOTO INFORMATION-RICH MODE: Do NOT generate 'image_query' or 'image_url'. Since there are NO photos on the slides, every slide MUST contain deep, comprehensive, detailed text and analytical information so the slides feel full, substantive, and ready for academic/professional defense!"
@@ -127,8 +127,8 @@ Follow this logical section progression across your {count} slides:
         density_instruction = f"""4. COMPREHENSIVE, DEEP & DETAILED TEXT ON EVERY SLIDE (in {language} — DO NOT WRITE SHORT OR SUPERFICIAL TEXTS!):
    - 'title': Informative academic/professional headline of 5–9 words in {language}.
    - 'subtitle': Detailed 1-2 line analytical subtitle of 8–15 words in {language} summarizing the section thesis.
-   - 'content': Write a deep, comprehensive analytical paragraph of 60–85 words (4–5 full sentences) in {language} thoroughly explaining the theoretical definitions, historical context, causal mechanisms, statistical evidence, and practical significance.
-   - 'key_points': Provide 4 detailed, fact-packed bullet statements of 18–28 words each (1-2 full sentences per bullet) in {language} containing specific dates, percentages, scholarly concepts, real-world examples, and conclusions."""
+   - 'content': MUST be a deep, comprehensive analytical paragraph of 75–105 words (5–6 full sentences) in {language} thoroughly explaining the theoretical definitions, historical context, causal mechanisms, statistical evidence, and practical significance.
+   - 'key_points': MUST provide 4 to 5 detailed, fact-packed bullet statements of 22–32 words each (1–2 full sentences per bullet) in {language} containing specific dates, percentages, scholarly concepts, real-world examples, and conclusions."""
         type_fields_instruction = """8. ONLY INCLUDE TYPE-SPECIFIC FIELDS WHEN NEEDED (MAKE THEM DETAILED AND INFORMATIVE):
    - Include "stats" (array of 3 items: {"value": "Metric (e.g. $1.8 трлн, 35%, 1000+)", "label": "Detailed context and source of the metric (12-20 words)"}) ONLY when "type" is "statistics".
    - Include "timeline" (array of 3 items: {"step": "01", "title": "Stage period & title", "desc": "Comprehensive 28-42 word explanation of key events, theories, and outcomes in this stage"}) ONLY when "type" is "timeline".

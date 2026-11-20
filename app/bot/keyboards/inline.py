@@ -73,7 +73,7 @@ def build_topic_ready_text(
         f"📐 Құрылым: {tmpl_info['title']} • 🌐 Тіл: {lang_info['label']}\n"
         f"🎭 Стиль: <b>{p_style['title']}</b>" + (f" • 👶 Кейіпкер: <b>{session.childName}</b>" if getattr(session, "childName", None) else "") + "\n"
         f"{photo_line}{doc_badge}{cred_line}{warning_block}\n\n"
-        f"📦 Дайын болғанда бірден <b>3 файл (.PPTX + .PDF + .DOCX Қорғау сөзі)</b> жіберіледі!\n"
+        f"📦 Дайын болғанда бірден <b>2 файл (.PDF + .PPTX)</b> жіберіледі!\n"
         f"👇 Бет санын бассаңыз, презентация бірден дайындалады:"
     )
 
@@ -136,7 +136,7 @@ def build_topic_ready_keyboard(session: TelegramSession) -> Dict[str, Any]:
         "inline_keyboard": [
             [
                 {
-                    "text": f"🚀 Бірден жасау ({session.slideCount} бет • PPTX+PDF+DOCX)",
+                    "text": f"🚀 Бірден жасау ({session.slideCount} бет • PDF+PPTX)",
                     "callback_data": f"gen_now:{session.slideCount}",
                 }
             ],
@@ -378,7 +378,7 @@ def build_admin_payment_review_keyboard(payment_id: int, credits: int, amount_kz
 
 def build_referral_keyboard(ref_link: str, partner_balance_kzt: int = 0) -> Dict[str, Any]:
     share_text = (
-        "🔥 Санаулы секундта сапалы дайын презентация (.PPTX + .PDF + .DOCX Қорғау сөзі) "
+        "🔥 Санаулы секундта сапалы дайын презентация (.PDF + .PPTX) "
         "жасап беретін күшті AI бот! Кірсең 1 презентация ТЕГІН беріледі 👇"
     )
     share_url = f"https://t.me/share/url?url={urllib.parse.quote(ref_link)}&text={urllib.parse.quote(share_text)}"
@@ -413,45 +413,34 @@ def build_admin_withdrawal_action_keyboard(withdrawal_id: int, amount_kzt: int) 
 
 
 def build_admin_keyboard(pending_withdrawals_count: int = 0, pending_payments_count: int = 0) -> Dict[str, Any]:
-    """Clean Modern Admin Control Center (SlideAI KZ)."""
+    """Consolidated & Clean Admin Control Center (SlideAI KZ)."""
     w_badge = f" ({pending_withdrawals_count})" if pending_withdrawals_count > 0 else ""
     p_badge = f" ({pending_payments_count})" if pending_payments_count > 0 else ""
     return {
         "inline_keyboard": [
             [
-                {"text": "📊 График (7 күн)", "callback_data": "admin_charts:7"},
-                {"text": "📈 График (30 күн)", "callback_data": "admin_charts:30"},
+                {"text": "📊 Статистика & График", "callback_data": "admin_stats_funnel"},
+                {"text": "👥 Қолданушылар & Іздеу", "callback_data": "admin_users:0:all"},
             ],
             [
-                {"text": "👥 Қолданушылар", "callback_data": "admin_users:0:all"},
-                {"text": "🔍 Іздеу (ID / @tag)", "callback_data": "admin_find_user"},
-            ],
-            [
-                {"text": "💰 Бағалар (₸ / ⭐️ Stars)", "callback_data": "admin_edit_prices"},
-                {"text": "🎛 2 Режим (Фото/Фотосыз)", "callback_data": "admin_gen_modes"},
-            ],
-            [
-                {"text": "🎟 Промокодтар", "callback_data": "admin_promos"},
-                {"text": "📢 Хабарлама тарату", "callback_data": "admin_broadcast_menu"},
+                {"text": "💰 Бағалар (₸ / ⭐️)", "callback_data": "admin_edit_prices"},
+                {"text": "🎛 3 Режим (Фото)", "callback_data": "admin_gen_modes"},
             ],
             [
                 {"text": f"🧾 Чектер{p_badge}", "callback_data": "admin_payments"},
-                {"text": f"💸 Выплаталар{w_badge}", "callback_data": "admin_withdrawals"},
+                {"text": "🎟 Промокодтар", "callback_data": "admin_promos"},
             ],
             [
-                {"text": "📈 AI шығындары", "callback_data": "admin_ai_costs"},
+                {"text": f"💸 Выплаталар{w_badge}", "callback_data": "admin_withdrawals"},
                 {"text": "🛡 Анти-фрод", "callback_data": "admin_antifraud"},
             ],
             [
-                {"text": "📊 Когорта / Churn", "callback_data": "admin_cohorts_churn"},
-                {"text": "⚡ Метрикалар", "callback_data": "admin_prometheus"},
+                {"text": "📢 Хабарлама тарату", "callback_data": "admin_broadcast_menu"},
+                {"text": "💾 База (CSV)", "callback_data": "admin_export_db"},
             ],
             [
-                {"text": "💾 База (CSV/Excel)", "callback_data": "admin_export_db"},
                 {"text": "🏢 Kaspi Pay баптау", "callback_data": "admin_kaspi_settings"},
-            ],
-            [
-                {"text": "🔄 Статистиканы жаңарту", "callback_data": "admin_refresh"},
+                {"text": "🔄 Жаңарту", "callback_data": "admin_refresh"},
             ],
         ]
     }
@@ -493,7 +482,10 @@ def build_admin_users_list_keyboard(
             {"text": "Келесі ➡️", "callback_data": f"admin_users:{safe_page + 1}:{filter_mode}"},
         ])
 
-    rows.append([{"text": "⬅️ Админ панельге оралу", "callback_data": "admin_refresh"}])
+    rows.append([
+        {"text": "🔍 ID / @username іздеу", "callback_data": "admin_find_user"},
+        {"text": "⬅️ Админ панель", "callback_data": "admin_refresh"},
+    ])
     return {"inline_keyboard": rows}
 
 
@@ -559,23 +551,26 @@ def build_admin_price_editor_keyboard() -> Dict[str, Any]:
 
 
 def build_admin_gen_modes_keyboard() -> Dict[str, Any]:
-    """Allows Admin to toggle the 2 presentation generation modes (Фотосыз / Фотомен)."""
+    """Allows Admin to toggle the 3 presentation generation modes (Фотосыз / Фото-Гугл / Фото-генерация)."""
     modes = get_enabled_generation_modes()
     m_none = modes.get("none", True)
     m_ddg = modes.get("ddg", True)
+    m_oai = modes.get("gpt-image-2", True)
 
     st_none = "🟢 ҚОСУЛЫ" if m_none else "🔴 ӨШІРУЛІ"
     st_ddg = "🟢 ҚОСУЛЫ" if m_ddg else "🔴 ӨШІРУЛІ"
+    st_oai = "🟢 ҚОСУЛЫ" if m_oai else "🔴 ӨШІРУЛІ"
 
     rows: List[List[Dict[str, str]]] = [
         [{"text": f"{st_none} • 🚫 Фотосыз", "callback_data": "adm_toggle_mode:none"}],
-        [{"text": f"{st_ddg} • 🖼 Фотомен", "callback_data": "adm_toggle_mode:ddg"}],
+        [{"text": f"{st_ddg} • 🔍 Фото-Гугл", "callback_data": "adm_toggle_mode:ddg"}],
+        [{"text": f"{st_oai} • ✨ Фото-генерация", "callback_data": "adm_toggle_mode:gpt-image-2"}],
         [
             {"text": "📄 Тек «Фотосыз»", "callback_data": "adm_mode_preset:only_nophoto"},
-            {"text": "🔄 Екеуін де қосу", "callback_data": "adm_mode_preset:all_on"},
+            {"text": "🔄 Барлық 3 түрді қосу", "callback_data": "adm_mode_preset:all_on"},
         ],
         [
-            {"text": "💰 Тарифтерге өту", "callback_data": "admin_edit_prices"},
+            {"text": "💰 Бағаларға өту", "callback_data": "admin_edit_prices"},
             {"text": "⬅️ Админ панель", "callback_data": "admin_refresh"},
         ],
     ]
@@ -730,16 +725,17 @@ def build_wiz_academic_slides_keyboard(ui_lang: str = "kk") -> Dict[str, Any]:
 def build_wiz_academic_photo_keyboard(ui_lang: str = "kk") -> Dict[str, Any]:
     l = norm_lang(ui_lang)
     modes = get_enabled_generation_modes()
-    row_modes: List[Dict[str, str]] = []
+    rows: List[List[Dict[str, str]]] = []
     if modes.get("none", True):
-        row_modes.append({"text": i18n_t("btn_no_photo", l), "callback_data": "wiz_acad_gen:none"})
-    if modes.get("ddg", True) or modes.get("gpt-image-2", True):
-        row_modes.append({"text": i18n_t("btn_with_photo", l), "callback_data": "wiz_acad_gen:photo"})
-    if not row_modes:
-        row_modes.append({"text": i18n_t("btn_no_photo", l), "callback_data": "wiz_acad_gen:none"})
-    return {
-        "inline_keyboard": [
-            row_modes,
-            [{"text": i18n_t("btn_back", l), "callback_data": "new_presentation"}],
-        ]
-    }
+        rows.append([{"text": i18n_t("btn_no_photo", l), "callback_data": "wiz_acad_gen:none"}])
+    row_photos: List[Dict[str, str]] = []
+    if modes.get("ddg", True):
+        row_photos.append({"text": i18n_t("btn_photo_google", l), "callback_data": "wiz_acad_gen:ddg"})
+    if modes.get("gpt-image-2", True):
+        row_photos.append({"text": i18n_t("btn_photo_gen", l), "callback_data": "wiz_acad_gen:openai"})
+    if row_photos:
+        rows.append(row_photos)
+    if not rows:
+        rows.append([{"text": i18n_t("btn_no_photo", l), "callback_data": "wiz_acad_gen:none"}])
+    rows.append([{"text": i18n_t("btn_back", l), "callback_data": "new_presentation"}])
+    return {"inline_keyboard": rows}

@@ -160,12 +160,12 @@ from app.bot.service import (
     parse_user_input,
     generate_deck_for_session,
     build_pdf_for_session,
-    build_speech_for_session,
     reexport_deck_with_theme,
     load_saved_project_for_session,
     render_admin_analytics_chart_png,
     format_user_admin_card,
     format_admin_dashboard_text,
+    format_admin_stats_funnel_text,
 )
 from app.bot.handlers.commands import (
     get_start_message,
@@ -331,8 +331,8 @@ async def _animate_progress_bar(bot: Bot, chat_id: int, message_id: int, topic: 
     steps = [
         (30, "[▓▓▓░░░░░░░]", "📝 Слайдтар мазмұны мен құрылымы жазылуда..."),
         (60, "[▓▓▓▓▓▓░░░░]", "🖼 Фотосуреттер мен слайд дизайны құрастырылуда..." if with_photos else "🎨 Минималистік слайд блоктары мен инфографика жинақталуда..."),
-        (85, "[▓▓▓▓▓▓▓▓░░]", "📑 Телефонға арналған .PDF және спикердің .DOCX Қорғау сөзі дайындалуда..."),
-        (95, "[▓▓▓▓▓▓▓▓▓░]", "📦 3 дайын файл (.PPTX + .PDF + .DOCX) чатқа жүктелуде..."),
+        (85, "[▓▓▓▓▓▓▓▓░░]", "📑 Телефонға арналған .PDF нұсқасы дайындалуда..."),
+        (95, "[▓▓▓▓▓▓▓▓▓░]", "📦 Дайын файлдар (.PDF + .PPTX) чатқа жүктелуде..."),
     ]
     try:
         for pct, bar, desc in steps:
@@ -548,7 +548,7 @@ async def handle_inline_query(inline_query: InlineQuery):
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"🚀 «{topic[:24]}» презентациясын алу (.PPTX+.PDF+.DOCX)", url=deep_link)],
+            [InlineKeyboardButton(text=f"🚀 «{topic[:24]}» презентациясын алу (.PDF+.PPTX)", url=deep_link)],
         ]
     )
 
@@ -556,10 +556,10 @@ async def handle_inline_query(inline_query: InlineQuery):
         InlineQueryResultArticle(
             id=hashlib.md5(f"std_{topic}".encode("utf-8")).hexdigest(),
             title=f"📊 Презентация жасау: «{topic}»",
-            description="Бірден 3 файл (.PPTX + .PDF + .DOCX Қорғау сөзі) • Жоғары сапалы дизайн",
+            description="Бірден 2 файл (.PDF + .PPTX) • Жоғары сапалы дизайн",
             input_message_content=InputTextMessageContent(
                 message_text=(
-                    f"📊 <b>«{topic}»</b> тақырыбына дайын презентация (.PPTX + .PDF) және Қорғау сөзі (.DOCX)!\n\n"
+                    f"📊 <b>«{topic}»</b> тақырыбына дайын презентация (.PDF + .PPTX)!\n\n"
                     f""
                     f"🎁 Жаңа қолданушыларға <b>1 презентация ТЕГІН</b> беріледі!\n\n"
                     f"👇 Төмендегі батырманы басып, презентацияны жүктеп алыңыз:"
@@ -571,10 +571,10 @@ async def handle_inline_query(inline_query: InlineQuery):
         InlineQueryResultArticle(
             id=hashlib.md5(f"photo_{topic}".encode("utf-8")).hexdigest(),
             title=f"🖼 ВАУ Фото-Презентация: «{topic}»",
-            description="Иллюстрациялық фотолармен + 35 эксклюзивті дизайн + Қорғау сөзі",
+            description="Иллюстрациялық фотолармен + 35 эксклюзивті дизайн",
             input_message_content=InputTextMessageContent(
                 message_text=(
-                    f"🖼 <b>«{topic}»</b> — Фотосуреттері бар журнал стиліндегі ВАУ презентация (.PPTX + .PDF + .DOCX)!\n\n"
+                    f"🖼 <b>«{topic}»</b> — Фотосуреттері бар журнал стиліндегі ВАУ презентация (.PDF + .PPTX)!\n\n"
                     f"👇 Дайын презентацияны алу үшін батырманы басыңыз:"
                 ),
                 parse_mode=ParseMode.HTML,
@@ -1687,8 +1687,15 @@ async def _process_kaspi_receipt_locked(
 
     seller = get_seller_setting()
     if not seller:
-        ok, setup_msg, _ = save_company_from_first_receipt(uid, file_bytes)
-        await ver_msg.edit_text(setup_msg)
+        if is_admin(uid):
+            ok, setup_msg, _ = save_company_from_first_receipt(uid, file_bytes)
+            await ver_msg.edit_text(setup_msg)
+        else:
+            l = norm_lang(getattr(session, "uiLanguage", "kk"))
+            await ver_msg.edit_text(
+                i18n_t("kaspi_error", l),
+                reply_markup=dict_to_inline_markup(build_support_contact_keyboard(l)),
+            )
         return
 
     ver_res = verify_kaspi_receipt(
@@ -2234,10 +2241,9 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
         session.isStorybook = False
         if p_mode == "none":
             session.withPhotos = False
-        elif p_mode in ("photo", "ddg"):
+        elif p_mode == "ddg":
             session.withPhotos = True
-            modes = get_enabled_generation_modes()
-            session.imageSource = "ddg" if modes.get("ddg", True) else "gpt-image-2"
+            session.imageSource = "ddg"
         else:
             session.withPhotos = True
             session.imageSource = "gpt-image-2"
@@ -2733,6 +2739,31 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
         return
 
     # Admin 3 Presentation Generation Modes Control (Фотосыз / Фото / OpenAI)
+    # Admin Detailed Statistics & Funnel Screen
+    if data == "admin_stats_funnel":
+        if not is_admin(user_id):
+            await callback.answer("Рұқсат жоқ", show_alert=True)
+            return
+        await callback.answer()
+        st_txt = format_admin_stats_funnel_text()
+        st_kb = dict_to_inline_markup({
+            "inline_keyboard": [
+                [
+                    {"text": "📊 График (7 күн)", "callback_data": "admin_charts:7"},
+                    {"text": "📈 График (30 күн)", "callback_data": "admin_charts:30"},
+                ],
+                [
+                    {"text": "📈 AI шығындары", "callback_data": "admin_ai_costs"},
+                    {"text": "⬅️ Админ панель", "callback_data": "admin_refresh"},
+                ],
+            ]
+        })
+        try:
+            await callback.message.edit_text(st_txt, reply_markup=st_kb)
+        except Exception:
+            await callback.message.answer(st_txt, reply_markup=st_kb)
+        return
+
     if data == "admin_gen_modes":
         if not is_admin(user_id):
             await callback.answer("Рұқсат жоқ", show_alert=True)
@@ -3194,7 +3225,7 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
     # Load Saved Project (sends all 3 files: .PPTX + .PDF + .DOCX)
     if data.startswith("load_proj:"):
         proj_id = int(data.split(":")[1])
-        await callback.answer("📂 Жоба жүктелуде (.PPTX + .PDF + .DOCX)...")
+        await callback.answer("📂 Жоба жүктелуде (.PDF + .PPTX)...")
         await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_DOCUMENT)
 
         loaded = load_saved_project_for_session(session, proj_id, user_id=user_id)
@@ -3279,7 +3310,7 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, state: FSMContext):
         await callback.answer()
 
         text = (
-            "🎨 Жаңа дизайнды бассаңыз, дайын файлдар (.PPTX + .PDF + .DOCX) бірден сол дизайнмен қайта жіберіледі:"
+            "🎨 Жаңа дизайнды бассаңыз, дайын файлдар (.PDF + .PPTX) бірден сол дизайнмен қайта жіберіледі:"
             if mode == "reexport"
             else f"🎨 35 кәсіби дизайн ішінен ұнағанын таңдаңыз\n(Қазіргі: {get_selected_theme_label(session.designId, session.pendingTopic, with_photos=session.withPhotos)}):"
         )

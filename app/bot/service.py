@@ -434,13 +434,25 @@ def format_user_admin_card(user_id_or_profile: Any) -> Tuple[str, List[Dict[str,
 
 
 def format_admin_dashboard_text() -> Tuple[str, int, int]:
-    """
-    Formats comprehensive admin statistics including Logical Alerts, AI Cost Tracker, Funnel & Promo Codes.
-    Returns (text, pending_withdrawals_count, pending_payments_count).
-    """
+    """Compact & Clean Admin Panel main screen (details moved to sub-buttons)."""
+    stats = get_admin_stats()
+    pend_w_cnt = stats.get("pending_withdrawals_count", 0)
+    pend_p_cnt = stats.get("pending_payments_count", 0)
+
+    text = (
+        "⚙️ <b>SLIDEAI KZ — АДМИН ПАНЕЛЬ</b>\n\n"
+        f"💰 Табыс: <b>{stats['revenue_today_kzt']:,} ₸</b> (бүгін) • <b>{stats['revenue_total_kzt']:,} ₸</b> (жалпы)\n"
+        f"👥 Қолданушылар: <b>{stats['total_users']}</b> (+{stats['users_today']} бүгін) • 📑 Презентация: <b>{stats['total_generations']}</b>\n"
+        f"🧾 Чектер: <b>{pend_p_cnt}</b> • 💸 Выплата: <b>{pend_w_cnt}</b>\n\n"
+        "👇 Толық ақпарат пен баптаулар төмендегі батырмаларда:"
+    )
+    return text, pend_w_cnt, pend_p_cnt
+
+
+def format_admin_stats_funnel_text() -> str:
+    """Detailed Statistics, Funnel, Packages & Latency view for Admin button."""
     stats = get_admin_stats()
     tariffs = get_dynamic_tariffs()
-
     alerts_str = "\n".join(stats.get("logical_alerts", []))
 
     pkg_lines = ""
@@ -458,45 +470,21 @@ def format_admin_dashboard_text() -> Tuple[str, int, int]:
     f_tar = funnel.get("tariff_viewed", 0)
     f_pay = funnel.get("payment_completed", 0)
 
-    funnel_block = (
-        f"  1. Start: <b>{funnel.get('start', 0)}</b> (100%) → Тақырып: <b>{f_topic}</b> ({int(f_topic * 100 / f_start)}%)\n"
-        f"  2. Генерация: <b>{f_gen}</b> ({int(f_gen * 100 / f_start)}%) → Тариф: <b>{f_tar}</b> ({int(f_tar * 100 / f_start)}%) → Төлем: <b>{f_pay}</b> ({int(f_pay * 100 / f_start)}%)\n"
-    )
-
-    ai_c = stats.get("ai_costs", {})
-    ai_line = (
-        f"• Бүгін: <b>${ai_c.get('today_usd', 0):.4f} (~{ai_c.get('today_kzt', 0)} ₸)</b> | "
-        f"Барлығы: <b>${ai_c.get('total_usd', 0):.4f} (~{ai_c.get('total_kzt', 0)} ₸)</b>"
-    )
-
     promos = list_all_promo_codes()
-    promo_str = ", ".join(f"<code>{pr['code']}</code> ({pr['used_count']})" for pr in promos[:5])
+    promo_str = ", ".join(f"<code>{pr['code']}</code> ({pr['used_count']})" for pr in promos[:6])
+    pm = get_prometheus_metrics_snapshot()
+    ai_c = stats.get("ai_costs", {})
 
-    pend_w_cnt = stats.get("pending_withdrawals_count", 0)
-    pend_w_kzt = stats.get("pending_withdrawals_kzt", 0)
-    pend_p_cnt = stats.get("pending_payments_count", 0)
-
-    text = (
-        "⚙️ <b>SLIDEAI KZ — АДМИН ПАНЕЛЬ</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+    return (
+        "📊 <b>СТАТИСТИКА, ВОРОНКА ЖӘНЕ МЕТРИКАЛАР</b>\n\n"
         f"{alerts_str}\n\n"
-        "💰 <b>Қаржы және Сатылым:</b>\n"
-        f"• Бүгінгі табыс: <b>{stats['revenue_today_kzt']:,} ₸</b> ({stats['payments_today_count']} төлем)\n"
-        f"• Жалпы табыс: <b>{stats['revenue_total_kzt']:,} ₸</b> ({stats['payments_total_count']} төлем)\n"
-        f"• Қолмен тексеруді күтіп тұрған чектер: <b>{pend_p_cnt} дана</b>\n\n"
-        "📈 <b>AI Шығындарын Бақылау (DeepSeek / OpenAI):</b>\n"
-        f"{ai_line}\n\n"
-        "📊 <b>Воронка (Funnel Аналитика):</b>\n"
-        f"{funnel_block}\n"
-        "📦 <b>Сатылған пакеттер:</b>\n"
+        "📊 <b>Воронка (Funnel):</b>\n"
+        f"  1. Start: <b>{funnel.get('start', 0)}</b> (100%) → Тақырып: <b>{f_topic}</b> ({int(f_topic * 100 / f_start)}%)\n"
+        f"  2. Генерация: <b>{f_gen}</b> ({int(f_gen * 100 / f_start)}%) → Тариф: <b>{f_tar}</b> ({int(f_tar * 100 / f_start)}%) → Төлем: <b>{f_pay}</b> ({int(f_pay * 100 / f_start)}%)\n\n"
+        "📦 <b>Сатылымдар:</b>\n"
         f"{pkg_lines}\n"
-        "👥 <b>Қолданушылар & Генерациялар:</b>\n"
-        f"• Тіркелгендер: <b>{stats['total_users']}</b> (Бүгін: {stats['users_today']})\n"
-        f"• Презентациялар: <b>{stats['total_generations']}</b> (🖼 Фотомен: {stats.get('photo_generations', 0)} • ⚡ Кэштен: {stats['cached_generations']})\n"
-        f"• Выплата сұраныстары: <b>{pend_w_cnt} дана ({pend_w_kzt:,} ₸)</b>\n"
-        f"• Промокодтар: {promo_str}\n\n"
-        f"⚡ <b>Prometheus & Кэш Метрикалары:</b>\n"
-        f"• Latency (Орт / p95): <b>{get_prometheus_metrics_snapshot()['latency_avg_sec']}s / {get_prometheus_metrics_snapshot()['latency_p95_sec']}s</b> | Сурет кэші: <b>{get_prometheus_metrics_snapshot()['image_cache_hits_total']} hit</b>\n"
-        f"• 🛡 Анти-фрод Flag-тар: <b>{len(get_flagged_users(50))}</b> | 🤖 Churn тәуекелі (7к): <b>{get_cohort_analysis_stats()['churn_risk_7d_count']}</b> | 💝 Win-back (30к): <b>{get_cohort_analysis_stats()['inactive_30d_count']}</b>"
+        f"📑 <b>Генерация:</b> {stats['total_generations']} (🖼 Фотомен: {stats.get('photo_generations', 0)} • ⚡️ Кэштен: {stats['cached_generations']})\n"
+        f"🎟 <b>Промокодтар:</b> {promo_str}\n"
+        f"📈 <b>AI шығыны:</b> ${ai_c.get('today_usd', 0):.4f} (бүгін) • ${ai_c.get('total_usd', 0):.4f} (жалпы)\n"
+        f"⚡️ <b>Latency:</b> {pm['latency_avg_sec']}s / p95 {pm['latency_p95_sec']}s • Сурет кэші: {pm['image_cache_hits_total']} hit"
     )
-    return text, pend_w_cnt, pend_p_cnt
